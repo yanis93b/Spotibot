@@ -11,8 +11,9 @@ datasource db {
 }
 
 // A generated song / track produced by the AI music pipeline.
-// Audio bytes are stored directly in SQLite (small files, demo-scale)
-// and streamed back to the client via /api/audio/[id].
+// Audio bytes + AI-generated cover art are stored directly in SQLite
+// (small files, demo-scale) and streamed back to the client via the
+// /api/audio/[id] and /api/cover/[id] routes.
 model Song {
   id          String   @id @default(cuid())
   title       String
@@ -21,10 +22,20 @@ model Song {
   genre       String
   mood        String
   style       String
-  voice       String   @default("tongtong")
+  voice       String   @default("en")
   audioData   Bytes
   audioFormat String   @default("mp3")
   durationMs  Int      @default(0)
+  // AI-generated square cover art (PNG bytes). Nullable so cover generation
+  // failures don't lose the song — the UI falls back to a gradient cover.
+  coverData   Bytes?
+  coverFormat String   @default("png")
+  // Musical attributes surfaced by the Ace Music model.
+  bpm         Int?
+  keyScale    String?
+  timeSig     String?
+  // The seed used for generation (enables reproducibility display in the UI).
+  seed        BigInt?
   liked       Boolean  @default(false)
   createdAt   DateTime @default(now())
 

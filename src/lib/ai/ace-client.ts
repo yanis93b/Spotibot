@@ -82,22 +82,28 @@ export interface AceGenerationParams {
   keyScale?: string;
   /** Time signature: "2"|"3"|"4"|"6". Optional. */
   timeSignature?: string;
+  /** Output audio format: "mp3" | "wav" | "flac" | "opus" | "aac" | "wav32". Default "mp3". */
+  audioFormat?: string;
   /**
    * Enable 5Hz LM planning for higher musical quality (slower). When false the
    * DiT runs in pure text2music mode. Default false (faster, great for a web
    * UI where the user is waiting). Callers may opt in for a "high quality" mode.
    */
   thinking?: boolean;
+  /** Specific seed for reproducibility. When provided, use_random_seed=false. */
+  seed?: number;
 }
 
 /** Successful generation result. */
 export interface AceGenerationResult {
-  /** Decoded MP3 audio bytes. */
+  /** Decoded audio bytes. */
   buffer: Buffer;
-  /** Always "mp3" for the cloud API. */
-  format: "mp3";
+  /** Audio format (matches the requested audioFormat, default "mp3"). */
+  format: string;
   /** Raw content string returned by the model (usually "Music generated successfully."). */
   message: string;
+  /** The seed actually used (echoed from the model when available). */
+  seedUsed?: number;
 }
 
 /** Shape of a chat-completion response from the Ace Music API. */
