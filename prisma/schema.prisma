@@ -1,0 +1,31 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A generated song / track produced by the AI music pipeline.
+// Audio bytes are stored directly in SQLite (small files, demo-scale)
+// and streamed back to the client via /api/audio/[id].
+model Song {
+  id          String   @id @default(cuid())
+  title       String
+  prompt      String
+  lyrics      String
+  genre       String
+  mood        String
+  style       String
+  voice       String   @default("tongtong")
+  audioData   Bytes
+  audioFormat String   @default("mp3")
+  durationMs  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
