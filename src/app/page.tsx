@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import type { GenerateRequest, Playlist, Song } from "@/lib/types";
@@ -93,14 +93,20 @@ export default function Home() {
   const queueList = view === "playlist" ? activePlaylistSongs : filteredSongs;
 
   // ── Handlers ───────────────────────────────────────────────────────────────
+  // AbortController for the in-flight generation request (so the user can cancel).
+  const generateAbortRef = useRef<AbortController | null>(null);
+
   const handleGenerate = useCallback(
     async (req: GenerateRequest): Promise<Song> => {
       setIsGenerating(true);
+      const controller = new AbortController();
+      generateAbortRef.current = controller;
       try {
         const res = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(req),
+          signal: controller.signal,
         });
         if (!res.ok) {
           let message = `Generation failed (${res.status})`;
@@ -120,15 +126,26 @@ export default function Home() {
         toast({ title: "Track ready!", description: `“${song.title}” is now playing.` });
         return song;
       } catch (e) {
+        // AbortError = user cancelled — don't show an error toast.
+        if (e instanceof DOMException && e.name === "AbortError") {
+          toast({ title: "Generation cancelled" });
+          throw e;
+        }
         const message = e instanceof Error ? e.message : "Generation failed";
         toast({ title: "Couldn't generate track", description: message, variant: "destructive" });
         throw e;
       } finally {
+        generateAbortRef.current = null;
         setIsGenerating(false);
       }
     },
     [prepend, playSong, toast],
   );
+
+  /** Cancel the in-flight generation (wired to the loader's Cancel button). */
+  const handleCancelGenerate = useCallback(() => {
+    generateAbortRef.current?.abort();
+  }, []);
 
   const handleToggleLike = useCallback(
     async (id: string): Promise<void> => {
@@ -317,7 +334,7 @@ export default function Home() {
 
                   {isGenerating ? (
                     <div className="mx-auto max-w-2xl">
-                      <GenerationLoader />
+                      <GenerationLoader onCancel={handleCancelGenerate} />
                     </div>
                   ) : (
                     <div className="mx-auto max-w-2xl">
