@@ -32,6 +32,9 @@ export {
 } from "./ace-client";
 export type { AceGenerationParams, AceGenerationResult } from "./ace-client";
 
+export { generateCover } from "./cover-generator";
+export type { CoverParams, CoverResult } from "./cover-generator";
+
 // Expose the ZAI singleton accessor so the lyricist (and any future server
 // module) can reuse the cached ZAI client without duplicating it.
 export { getZAI } from "./zai-instance";

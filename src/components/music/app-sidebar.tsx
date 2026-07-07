@@ -1,186 +1,279 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Music2, Sparkles, Library, Wand2, Heart, Github } from "lucide-react";
+import {
+  Music2,
+  Sparkles,
+  Home,
+  Heart,
+  Search,
+  Plus,
+  Github,
+  ListMusic,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AceStatusIndicator } from "./ace-status-indicator";
 
-export type SidebarView = "create" | "library";
+export type SidebarView = "create" | "library" | "liked";
 
 export interface AppSidebarProps {
-  /** Currently-active view. */
   view: SidebarView;
-  /** Switch the active view. */
   onViewChange: (v: SidebarView) => void;
-  /** Total track count (shown next to Library). */
   trackCount: number;
-  /** Liked track count (shown next to a liked filter). */
   likedCount: number;
-  /** Whether the liked filter is on (Library view only). */
-  likedOnly: boolean;
-  /** Toggle the liked filter. */
-  onToggleLikedOnly: () => void;
-  /** Whether a generation is in-flight. */
   isGenerating: boolean;
+  /** Search query (drives the Library filter). */
+  search: string;
+  onSearchChange: (q: string) => void;
 }
 
 /**
- * Suno-style left sidebar: brand at top, primary nav (Create / Library), a
- * liked-tracks filter, the Ace Music connection status, and footer links.
- *
- * On mobile this collapses into a slim icon rail; on sm+ it expands to a
- * fixed 248px column.
+ * Spotify-style left sidebar: brand + primary nav (Home / Search / Create) and
+ * a "Your Library" section with All / Liked filters. On mobile it collapses to
+ * a 64px icon rail; on lg+ it's a fixed 260px column with the search box.
  */
 export function AppSidebar({
   view,
   onViewChange,
   trackCount,
   likedCount,
-  likedOnly,
-  onToggleLikedOnly,
   isGenerating,
+  search,
+  onSearchChange,
 }: AppSidebarProps) {
   return (
     <aside
       aria-label="Primary navigation"
-      className="sticky top-0 flex h-dvh w-16 shrink-0 flex-col border-r border-white/10 bg-[#0b0b12]/80 backdrop-blur-xl sm:w-[248px]"
+      className="hidden h-dvh w-[260px] shrink-0 flex-col gap-2 border-r border-white/[0.06] bg-black/40 p-2 sm:flex"
     >
-      {/* Brand */}
-      <div className="flex h-16 items-center gap-2.5 border-b border-white/10 px-3 sm:px-5">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-fuchsia-500 via-purple-500 to-rose-500 shadow-lg shadow-fuchsia-500/25">
-          <Music2 className="size-5 text-white" aria-hidden />
-        </span>
-        <div className="hidden flex-col leading-none sm:flex">
-          <span className="gradient-text text-lg font-bold tracking-tight">
-            AceMusic
+      {/* Brand + top nav card */}
+      <div className="rounded-lg bg-[#121214] p-3">
+        <a
+          href="/"
+          className="mb-3 flex items-center gap-2.5 rounded-md px-2 py-1 focus-visible:outline-none"
+          aria-label="AceMusic Studio home"
+        >
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 via-purple-500 to-rose-500 shadow-lg shadow-fuchsia-500/25">
+            <Music2 className="size-5 text-white" aria-hidden />
           </span>
-          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground/70">
-            Studio
+          <span className="flex flex-col leading-none">
+            <span className="gradient-text text-lg font-bold tracking-tight">
+              AceMusic
+            </span>
+            <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground/70">
+              Studio
+            </span>
           </span>
+        </a>
+
+        <nav className="flex flex-col gap-1">
+          <NavBtn
+            active={view === "create"}
+            onClick={() => onViewChange("create")}
+            icon={<Home className="size-5" aria-hidden />}
+            label="Home"
+          />
+          <button
+            type="button"
+            onClick={() => onViewChange("library")}
+            className={cn(
+              "flex items-center gap-3 rounded-md px-2 py-2 text-left text-sm font-medium transition-colors",
+              view === "library"
+                ? "bg-white/10 text-white"
+                : "text-muted-foreground hover:text-white",
+            )}
+          >
+            <Search className="size-5" aria-hidden />
+            <span>Search</span>
+          </button>
+        </nav>
+      </div>
+
+      {/* Library card */}
+      <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-[#121214] p-3">
+        <div className="mb-2 flex items-center justify-between px-2">
+          <button
+            type="button"
+            onClick={() => onViewChange("library")}
+            className="flex items-center gap-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-white"
+          >
+            <ListMusic className="size-5" aria-hidden />
+            Your Library
+          </button>
+          <button
+            type="button"
+            onClick={() => onViewChange("create")}
+            aria-label="Create new song"
+            title="Create new song"
+            className={cn(
+              "grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-white",
+              isGenerating && "text-fuchsia-400",
+            )}
+          >
+            <Plus className={cn("size-4", isGenerating && "animate-spin")} aria-hidden />
+          </button>
+        </div>
+
+        {/* Filter chips: All / Liked */}
+        <div className="mb-3 flex gap-2 px-1">
+          <FilterChip
+            active={view === "library"}
+            onClick={() => onViewChange("library")}
+          >
+            All
+          </FilterChip>
+          <FilterChip
+            active={view === "liked"}
+            onClick={() => onViewChange("liked")}
+          >
+            <Heart className="mr-1 size-3" aria-hidden />
+            Liked
+          </FilterChip>
+        </div>
+
+        {/* Search box (Library only) */}
+        {view !== "create" && (
+          <div className="mb-2 px-1">
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="Search in library"
+                aria-label="Search your library"
+                className="h-9 w-full rounded-md border border-white/[0.06] bg-white/[0.04] pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-fuchsia-400/30 focus:outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Library list (All / Liked entries) */}
+        <div className="-mr-1 flex-1 overflow-y-auto pr-1">
+          <LibraryEntry
+            active={view === "library"}
+            onClick={() => onViewChange("library")}
+            icon={<ListMusic className="size-5" aria-hidden />}
+            title="All Tracks"
+            subtitle={`${trackCount} ${trackCount === 1 ? "track" : "tracks"}`}
+          />
+          <LibraryEntry
+            active={view === "liked"}
+            onClick={() => onViewChange("liked")}
+            icon={
+              <span className="grid size-12 place-items-center rounded-md bg-gradient-to-br from-purple-500 to-fuchsia-600">
+                <Heart className="size-5 fill-white text-white" aria-hidden />
+              </span>
+            }
+            title="Liked Songs"
+            subtitle={`${likedCount} ${likedCount === 1 ? "track" : "tracks"}`}
+          />
         </div>
       </div>
 
-      {/* Nav */}
-      <nav className="flex flex-1 flex-col gap-1 p-2 sm:p-3">
-        <NavButton
-          active={view === "create"}
-          onClick={() => onViewChange("create")}
-          icon={<Wand2 className="size-5" aria-hidden />}
-          label="Create"
-          showLabel
-          badge={
-            isGenerating ? (
-              <motion.span
-                animate={{ opacity: [0.4, 1, 0.4] }}
-                transition={{ duration: 1.4, repeat: Infinity }}
-                className="size-1.5 rounded-full bg-fuchsia-400"
-              />
-            ) : undefined
-          }
-        />
-        <NavButton
-          active={view === "library"}
-          onClick={() => onViewChange("library")}
-          icon={<Library className="size-5" aria-hidden />}
-          label="Library"
-          showLabel
-          badge={
-            <span className="text-[10px] font-semibold tabular-nums text-muted-foreground">
-              {trackCount}
-            </span>
-          }
-        />
-
-        {/* Liked filter — only relevant in Library view */}
-        <button
-          type="button"
-          disabled={view !== "library"}
-          onClick={onToggleLikedOnly}
-          aria-pressed={likedOnly}
-          className={cn(
-            "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all disabled:cursor-not-allowed disabled:opacity-40",
-            likedOnly && view === "library"
-              ? "bg-rose-500/15 text-rose-200"
-              : "text-foreground/75 hover:bg-white/5 hover:text-foreground",
-          )}
-        >
-          <Heart
-            className={cn(
-              "size-5 shrink-0",
-              likedOnly && view === "library" && "fill-rose-400 text-rose-400",
-            )}
-            aria-hidden
-          />
-          <span className="hidden text-sm font-medium sm:inline">Liked</span>
-          {likedCount > 0 && (
-            <span className="ml-auto hidden text-[10px] font-semibold tabular-nums text-muted-foreground sm:inline">
-              {likedCount}
-            </span>
-          )}
-        </button>
-      </nav>
-
-      {/* Status + footer */}
-      <div className="border-t border-white/10 p-2 sm:p-3">
-        <div className="hidden px-1 pb-2 sm:block">
-          <AceStatusIndicator />
-        </div>
-        <a
-          href="https://acemusic.ai"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hidden items-center gap-2 rounded-lg px-3 py-2 text-xs text-muted-foreground/70 transition-colors hover:bg-white/5 hover:text-fuchsia-200 sm:flex"
-          title="acemusic.ai — the world's first open-source Music AI platform"
-        >
-          <Sparkles className="size-3.5" aria-hidden />
-          Ace Music v1.5
-        </a>
+      {/* Footer: status + links */}
+      <div className="flex items-center justify-between rounded-lg bg-[#121214] px-3 py-2">
+        <AceStatusIndicator />
         <a
           href="https://github.com/ace-step/ACE-Step-1.5"
           target="_blank"
           rel="noopener noreferrer"
-          aria-label="View ACE-Step source on GitHub (opens in a new tab)"
-          className="flex items-center justify-center rounded-lg p-2 text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground sm:justify-start sm:gap-2 sm:px-3 sm:text-xs"
+          aria-label="View ACE-Step source on GitHub"
+          className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
         >
-          <Github className="size-4 sm:size-3.5" aria-hidden />
-          <span className="hidden sm:inline">Source</span>
+          <Github className="size-4" aria-hidden />
         </a>
       </div>
     </aside>
   );
 }
 
-/** Internal: a nav button with icon + label + optional badge. */
-function NavButton({
+/** Internal: a primary nav button. */
+function NavBtn({
   active,
   onClick,
   icon,
   label,
-  badge,
-  showLabel,
 }: {
   active: boolean;
   onClick: () => void;
   icon: React.ReactNode;
   label: string;
-  badge?: React.ReactNode;
-  showLabel?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-current={active ? "page" : undefined}
       className={cn(
-        "group flex items-center gap-3 rounded-xl px-3 py-2.5 transition-all",
-        active
-          ? "bg-gradient-to-r from-fuchsia-500/20 to-purple-500/10 text-fuchsia-100 ring-1 ring-fuchsia-400/25"
-          : "text-foreground/75 hover:bg-white/5 hover:text-foreground",
+        "flex items-center gap-3 rounded-md px-2 py-2 text-left text-sm font-medium transition-colors",
+        active ? "bg-white/10 text-white" : "text-muted-foreground hover:text-white",
       )}
     >
-      <span className={cn("shrink-0", active && "text-fuchsia-300")}>{icon}</span>
-      {showLabel && <span className="hidden text-sm font-medium sm:inline">{label}</span>}
-      {badge && <span className="ml-auto hidden sm:flex sm:items-center">{badge}</span>}
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+/** Internal: a small filter chip. */
+function FilterChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+        active
+          ? "bg-white text-black"
+          : "bg-white/[0.06] text-muted-foreground hover:bg-white/10 hover:text-white",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Internal: a library list entry (Spotify playlist-row style). */
+function LibraryEntry({
+  active,
+  onClick,
+  icon,
+  title,
+  subtitle,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-3 rounded-md p-1.5 text-left transition-colors",
+        active ? "bg-white/[0.08]" : "hover:bg-white/[0.04]",
+      )}
+    >
+      {icon}
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate text-sm font-medium", active ? "text-fuchsia-200" : "text-foreground/90")}>
+          {title}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">{subtitle}</span>
+      </span>
     </button>
   );
 }

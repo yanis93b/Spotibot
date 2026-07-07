@@ -27,6 +27,11 @@ export function toPublicSong(row: DbSong): Song {
     audioUrl: `/api/audio/${row.id}`,
     audioFormat: row.audioFormat,
     durationMs: row.durationMs,
+    coverUrl: row.coverData ? `/api/cover/${row.id}` : null,
+    bpm: row.bpm ?? null,
+    keyScale: row.keyScale ?? null,
+    timeSignature: row.timeSig ?? null,
+    seed: row.seed != null ? Number(row.seed) : null,
     liked: row.liked,
     createdAt: row.createdAt.toISOString(),
   };

@@ -149,7 +149,9 @@ function buildPayload(params: AceGenerationParams): Record<string, unknown> {
     bpm,
     keyScale,
     timeSignature,
+    audioFormat = "mp3",
     thinking = false,
+    seed,
   } = params;
 
   // Assemble the caption+lyrics message body. Empty lyrics → caption only.
@@ -159,7 +161,7 @@ function buildPayload(params: AceGenerationParams): Record<string, unknown> {
   }
 
   const audioConfig: Record<string, unknown> = {
-    format: "mp3",
+    format: audioFormat,
     vocal_language: language,
   };
   if (typeof duration === "number") {
@@ -175,7 +177,7 @@ function buildPayload(params: AceGenerationParams): Record<string, unknown> {
     audioConfig.time_signature = timeSignature;
   }
 
-  return {
+  const payload: Record<string, unknown> = {
     model: ACE_MODEL,
     messages: [{ role: "user", content }],
     stream: false,
@@ -189,6 +191,17 @@ function buildPayload(params: AceGenerationParams): Record<string, unknown> {
     use_cot_language: false,
     audio_config: audioConfig,
   };
+
+  // Seed: when a specific seed is provided, disable random seeding so the
+  // generation is reproducible. Otherwise let the server pick a random seed.
+  if (typeof seed === "number" && Number.isFinite(seed)) {
+    payload.seed = Math.round(seed);
+    payload.use_random_seed = false;
+  } else {
+    payload.use_random_seed = true;
+  }
+
+  return payload;
 }
 
 /**
@@ -311,8 +324,9 @@ export async function generateMusic(
 
       return {
         buffer,
-        format: "mp3",
+        format: params.audioFormat || "mp3",
         message: choice.message?.content || "Music generated successfully.",
+        seedUsed: typeof params.seed === "number" ? Math.round(params.seed) : undefined,
       };
     } catch (err) {
       lastError = err;

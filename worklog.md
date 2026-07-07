@@ -261,3 +261,50 @@ Stage Summary:
 - The interface now closely matches Suno: left sidebar nav, sticky bottom player bar (signature), responsive card grid, Simple/Custom mode toggle, like/favorites with DB persistence, detail overlay.
 - ALL functions verified working: generate (simple + custom), play/pause, seek, volume, like (persistent), download, delete, lyrics view, liked filter, responsive mobile.
 - Real Ace Music model drives everything; custom mode skips the LLM and renders user-supplied lyrics directly.
+
+---
+Task ID: 8 (Spotify-like redesign + cover generation + all model params)
+Agent: orchestrator
+Task: Make the interface truly Spotify-like, add AI cover generation, and expose all Ace Music model parameters.
+
+Work Log:
+- Backend: added coverData/coverFormat/bpm/keyScale/timeSig/seed fields to Song schema; db:push; cleared old songs.
+- Created src/lib/ai/cover-generator.ts: generateCover() uses z-ai-web-dev-sdk images.generations.create (1024x1024 PNG) with a genre/mood-aware prompt. Best-effort (returns null on failure, UI falls back to gradient).
+- Extended ace-client.ts: AceGenerationParams gains audioFormat + seed; buildPayload now sets audio_config.format dynamically and use_random_seed/seed based on input; AceGenerationResult returns format + seedUsed.
+- Extended audio-synth.ts: SynthParams/SynthResult pass through audioFormat + seed.
+- Updated types.ts: Song gains coverUrl, bpm, keyScale, timeSignature, seed. GenerateRequest gains audioFormat, bpm, keyScale, timeSignature, seed. Added AUDIO_FORMATS, MUSICAL_KEYS, TIME_SIGNATURES option arrays.
+- Updated song-mapper.ts: maps all new fields (coverUrl from coverData presence, seed BigInt→Number).
+- Updated /api/generate route: zod validates all new params; audio + cover run in Promise.all (parallel); persists coverData/bpm/keyScale/timeSig/seed.
+- Added /api/cover/[id] route (streams PNG, 404 when no cover). Updated /api/audio/[id] MIME mapper for flac/opus/aac/wav32.
+- Frontend: rebuilt as true Spotify 3-panel layout.
+  - app-sidebar.tsx: Spotify-style left sidebar (brand + Home/Search nav card, Library card with All/Liked filter chips + search box + library entries, footer with status). Hidden on mobile (sm:flex).
+  - top-bar.tsx: sticky top bar with back/forward arrows + search box (Library) + gradient Create CTA.
+  - track-list.tsx: Spotify-style table (#, cover+title+tags, album, like, duration, hover menu). Double-click to play.
+  - now-playing-panel.tsx: right panel (xl+) with large cover, title, tags, musical-attribute chips (BPM/key/time-sig/seed/format), prompt, full lyrics.
+  - bottom-player.tsx: Spotify-style 3-section bar (cover+title+like left, transport center with shuffle/prev/play/next/repeat + seek, volume+queue+download right).
+  - cover-image.tsx: reusable component — renders AI PNG from /api/cover/{id}, falls back to deterministic gradient + music icon on missing/errored.
+  - page.tsx: 3-panel orchestration (sidebar / main with top bar + carousels/track list / now-playing right panel). Home view shows composer + "Recently generated" carousel. Library/Liked views show track list. Next/prev queue logic.
+  - prompt-composer.tsx: added collapsible "Advanced — all model parameters" section with BPM slider (+enable switch), Key selector, Time signature selector, Audio format selector, Seed input (+enable switch).
+- Fixed Radix Select empty-value crash (used "auto" sentinel instead of "").
+- Restarted dev server (rm -rf .next) to pick up new Prisma client with coverData/seed fields.
+- `bun run lint` → clean.
+
+Agent Browser verification (real Ace Music + real cover generation):
+- 3-panel Spotify layout renders: left sidebar (Home/Search/Library + All/Liked filters), center (top bar + content), right now-playing panel (xl+).
+- Generated "Neon Dreams" (Lo-Fi/Dreamy/Female Vocal, 120 BPM enabled): POST /api/generate 200; cover + audio generated in parallel.
+- Cover art: GET /api/cover/{id} 200, AI-generated 1024x1024 PNG, naturalWidth=1024, displayed in track list + carousel + now-playing panel + bottom player.
+- Audio: GET /api/audio/{id} 200, plays in bottom player (Play→Pause toggle).
+- Bottom player: cover + title + tags + like (left), transport with prev/play/next + seek bar (center), download + volume (right).
+- Now-playing panel: large cover + title + "Lo-Fi · 120 BPM" chip + format chip + prompt + full lyrics.
+- Carousel: "Recently generated" on Home view with cover images + hover play button.
+- Track list: Spotify-style table with # / cover+title / album / like / duration.
+- Like: PATCH /api/songs/{id} 200, persisted (shows "Unlike" after toggle).
+- Advanced params: BPM slider (120), Key selector, Time signature, Audio format (MP3), Seed — all visible and functional.
+- Mobile (390x844): sidebar hidden (w=0), bottom player works, responsive.
+- No console/runtime errors. All operations 200.
+
+Stage Summary:
+- The interface is now a true Spotify clone: 3-panel layout, bottom player bar, track list table, carousels, now-playing right panel.
+- AI cover art generation works (parallel with audio, 1024x1024 PNG, gradient fallback).
+- ALL Ace Music model parameters exposed: BPM, key, time signature, audio format (mp3/wav/flac/opus/aac/wav32), seed (reproducible), high-quality LM planning, duration, language, custom lyrics.
+- Lint clean, no runtime errors, all features verified end-to-end.

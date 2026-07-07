@@ -16,6 +16,16 @@ export interface Song {
   audioFormat: string;
   /** Approximate playback duration in milliseconds (0 if unknown). */
   durationMs: number;
+  /** Relative URL that streams the AI cover art, e.g. "/api/cover/{id}". */
+  coverUrl: string | null;
+  /** Tempo in BPM (null when unset). */
+  bpm: number | null;
+  /** Musical key, e.g. "C Major" (null when unset). */
+  keyScale: string | null;
+  /** Time signature, e.g. "4" (null when unset). */
+  timeSignature: string | null;
+  /** Generation seed (null when random). */
+  seed: number | null;
   /** True when the user has liked/favorited this track. */
   liked: boolean;
   /** ISO 8601 creation timestamp. */
@@ -41,6 +51,16 @@ export interface GenerateRequest {
   customLyrics?: string;
   /** Optional custom title (custom mode). If absent, one is derived. */
   customTitle?: string;
+  /** Output audio format. Default "mp3". */
+  audioFormat?: string;
+  /** Tempo in BPM (30–300). Optional. */
+  bpm?: number;
+  /** Musical key, e.g. "C Major", "Am". Optional. */
+  keyScale?: string;
+  /** Time signature "2"|"3"|"4"|"6". Optional. */
+  timeSignature?: string;
+  /** Specific seed for reproducibility. Optional (random when absent). */
+  seed?: number;
 }
 
 export interface ApiError {
@@ -106,6 +126,45 @@ export const LANGUAGES = [
   { code: "pt", label: "Português" },
   { code: "ru", label: "Русский" },
   { code: "it", label: "Italiano" },
+] as const;
+
+/** Output audio formats supported by the Ace Music model. */
+export const AUDIO_FORMATS = [
+  { code: "mp3", label: "MP3" },
+  { code: "wav", label: "WAV" },
+  { code: "flac", label: "FLAC" },
+  { code: "opus", label: "Opus" },
+  { code: "aac", label: "AAC" },
+  { code: "wav32", label: "WAV 32-bit" },
+] as const;
+
+/** Musical keys the user can pin (empty string = "let the model decide"). */
+export const MUSICAL_KEYS = [
+  "",
+  "C Major",
+  "G Major",
+  "D Major",
+  "A Major",
+  "E Major",
+  "F Major",
+  "Bb Major",
+  "Eb Major",
+  "A Minor",
+  "E Minor",
+  "B Minor",
+  "F# Minor",
+  "C# Minor",
+  "G Minor",
+  "D Minor",
+] as const;
+
+/** Time signatures: "2"=2/4, "3"=3/4, "4"=4/4, "6"=6/8. Empty = auto. */
+export const TIME_SIGNATURES = [
+  { code: "", label: "Auto" },
+  { code: "4", label: "4/4" },
+  { code: "3", label: "3/4" },
+  { code: "2", label: "2/4" },
+  { code: "6", label: "6/8" },
 ] as const;
 
 /**

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages, FileText, Type } from "lucide-react";
+import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages, FileText, Type, ChevronDown, Music, KeyRound, Hash } from "lucide-react";
 import { motion } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
@@ -13,6 +13,9 @@ import {
   MOODS,
   STYLES,
   LANGUAGES,
+  AUDIO_FORMATS,
+  MUSICAL_KEYS,
+  TIME_SIGNATURES,
   type GenerateRequest,
   type Song,
 } from "@/lib/types";
@@ -62,6 +65,15 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
   const [duration, setDuration] = useState<number>(30);
   const [language, setLanguage] = useState<string>("en");
   const [highQuality, setHighQuality] = useState<boolean>(false);
+  // Advanced model params (all optional / auto by default).
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+  const [audioFormat, setAudioFormat] = useState<string>("mp3");
+  const [bpm, setBpm] = useState<number>(120);
+  const [useBpm, setUseBpm] = useState<boolean>(false);
+  const [keyScale, setKeyScale] = useState<string>("auto");
+  const [timeSignature, setTimeSignature] = useState<string>("auto");
+  const [useSeed, setUseSeed] = useState<boolean>(false);
+  const [seed, setSeed] = useState<number>(0);
 
   const remaining = MAX_PROMPT - prompt.length;
   const lyricsRemaining = MAX_LYRICS - customLyrics.length;
@@ -97,6 +109,11 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
       duration,
       language,
       highQuality,
+      audioFormat,
+      ...(useBpm ? { bpm } : {}),
+      ...(keyScale && keyScale !== "auto" ? { keyScale } : {}),
+      ...(timeSignature && timeSignature !== "auto" ? { timeSignature } : {}),
+      ...(useSeed ? { seed } : {}),
       ...(mode === "custom"
         ? { customLyrics: customLyrics.trim(), customTitle: customTitle.trim() || undefined }
         : {}),
@@ -364,6 +381,124 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
           disabled={loading}
           aria-label="Toggle high-quality generation"
         />
+      </div>
+
+      {/* Advanced settings (collapsible) — all Ace Music model params */}
+      <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-black/20">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((s) => !s)}
+          aria-expanded={showAdvanced}
+          className="flex w-full items-center justify-between px-3.5 py-3 text-left transition-colors hover:bg-white/[0.03]"
+        >
+          <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground/80">
+            <Music className="size-3.5" aria-hidden /> Advanced — all model parameters
+          </span>
+          <ChevronDown
+            className={cn("size-4 text-muted-foreground transition-transform", showAdvanced && "rotate-180")}
+            aria-hidden
+          />
+        </button>
+        {showAdvanced && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="space-y-3 px-3.5 pb-3.5"
+          >
+            {/* BPM */}
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground/85">
+                <Switch checked={useBpm} onCheckedChange={setUseBpm} disabled={loading} aria-label="Enable BPM" />
+                Tempo (BPM)
+              </label>
+              {useBpm && (
+                <div className="flex flex-1 items-center gap-2">
+                  <Slider
+                    value={[bpm]}
+                    onValueChange={(v) => setBpm(v[0] ?? 120)}
+                    min={30}
+                    max={300}
+                    step={1}
+                    disabled={loading}
+                    aria-label="BPM"
+                    className="flex-1 [&_[data-slot=slider-range]]:bg-fuchsia-400 [&_[data-slot=slider-thumb]]:size-3.5 [&_[data-slot=slider-thumb]]:border-fuchsia-400 [&_[data-slot=slider-thumb]]:bg-white"
+                  />
+                  <span className="w-12 text-right text-xs tabular-nums text-fuchsia-200">{bpm}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Key + Time signature + Format row */}
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  <KeyRound className="size-3" aria-hidden /> Key
+                </label>
+                <Select value={keyScale} onValueChange={setKeyScale} disabled={loading}>
+                  <SelectTrigger className="h-9 border-white/10 bg-black/30 text-xs" aria-label="Musical key">
+                    <SelectValue placeholder="Auto" />
+                  </SelectTrigger>
+                  <SelectContent className="border-white/10 bg-[#15151c]">
+                    <SelectItem value="auto" className="text-xs">Auto</SelectItem>
+                    {MUSICAL_KEYS.filter((k) => k).map((k) => (
+                      <SelectItem key={k} value={k} className="text-xs">{k}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  <Clock className="size-3" aria-hidden /> Time Sig
+                </label>
+                <Select value={timeSignature} onValueChange={setTimeSignature} disabled={loading}>
+                  <SelectTrigger className="h-9 border-white/10 bg-black/30 text-xs" aria-label="Time signature">
+                    <SelectValue placeholder="Auto" />
+                  </SelectTrigger>
+                  <SelectContent className="border-white/10 bg-[#15151c]">
+                    {TIME_SIGNATURES.map((t) => (
+                      <SelectItem key={t.code || "auto"} value={t.code || "auto"} className="text-xs">{t.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  <Music className="size-3" aria-hidden /> Format
+                </label>
+                <Select value={audioFormat} onValueChange={setAudioFormat} disabled={loading}>
+                  <SelectTrigger className="h-9 border-white/10 bg-black/30 text-xs" aria-label="Audio format">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-white/10 bg-[#15151c]">
+                    {AUDIO_FORMATS.map((f) => (
+                      <SelectItem key={f.code} value={f.code} className="text-xs">{f.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Seed */}
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-foreground/85">
+                <Switch checked={useSeed} onCheckedChange={setUseSeed} disabled={loading} aria-label="Enable seed" />
+                <Hash className="size-3" aria-hidden /> Seed (reproducible)
+              </label>
+              {useSeed && (
+                <input
+                  type="number"
+                  min={0}
+                  max={4294967295}
+                  value={seed}
+                  onChange={(e) => setSeed(Math.max(0, Math.min(4294967295, Number(e.target.value) || 0)))}
+                  disabled={loading}
+                  aria-label="Generation seed"
+                  className="h-9 w-40 rounded-md border border-white/10 bg-black/30 px-2 text-right text-xs tabular-nums focus:border-fuchsia-400/40 focus:outline-none"
+                />
+              )}
+            </div>
+          </motion.div>
+        )}
       </div>
 
       {/* Action row */}

@@ -1,36 +1,66 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import type { GenerateRequest, Song } from "@/lib/types";
 import { AppSidebar, type SidebarView } from "@/components/music/app-sidebar";
+import { TopBar } from "@/components/music/top-bar";
 import { BottomPlayer } from "@/components/music/bottom-player";
 import { PromptComposer } from "@/components/music/prompt-composer";
-import { SongFeed } from "@/components/music/song-feed";
-import { SongDetail } from "@/components/music/song-detail";
+import { TrackList } from "@/components/music/track-list";
+import { NowPlayingPanel } from "@/components/music/now-playing-panel";
 import { GenerationLoader } from "@/components/music/generation-loader";
 import { useSongs } from "@/hooks/use-songs";
 import { usePlayerStore } from "@/lib/player-store";
-import { Sparkles } from "lucide-react";
+import { CoverImage } from "@/components/music/cover-image";
+import { Play, Pause, Heart } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function Home() {
   const { songs, loading: songsLoading, prepend, remove, restore, toggleLike } = useSongs();
   const [view, setView] = useState<SidebarView>("create");
-  const [likedOnly, setLikedOnly] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [detailSong, setDetailSong] = useState<Song | null>(null);
+  const [search, setSearch] = useState("");
   const { toast } = useToast();
 
   const patchCurrent = usePlayerStore((s) => s.patchCurrent);
   const playSong = usePlayerStore((s) => s.playSong);
+  const current = usePlayerStore((s) => s.current);
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const togglePlay = usePlayerStore((s) => s.togglePlay);
 
   const likedCount = songs.filter((s) => s.liked).length;
 
+  // Filtered lists for the Library / Liked views + search.
+  const filteredSongs = useMemo(() => {
+    let list = songs;
+    if (view === "liked") list = list.filter((s) => s.liked);
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (s) =>
+          s.title.toLowerCase().includes(q) ||
+          s.genre.toLowerCase().includes(q) ||
+          s.mood.toLowerCase().includes(q) ||
+          s.lyrics.toLowerCase().includes(q),
+      );
+    }
+    return list;
+  }, [songs, view, search]);
+
+  // Recent tracks for the Home view carousel.
+  const recentSongs = useMemo(
+    () =>
+      [...songs]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 10),
+    [songs],
+  );
+
   /**
    * Generate a song. Owns the fetch, loading flag, toasts, and library prepend.
-   * After success the new song auto-plays and the view flips to the library so
-   * the user sees it appear at the top of the feed.
+   * After success the new song auto-plays and the view flips to the library.
    */
   const handleGenerate = useCallback(
     async (req: GenerateRequest): Promise<Song> => {
@@ -57,7 +87,6 @@ export default function Home() {
         prepend(song);
         playSong(song);
         setView("library");
-        setLikedOnly(false);
         toast({
           title: "Track ready!",
           description: `“${song.title}” is now playing.`,
@@ -81,13 +110,8 @@ export default function Home() {
   /** Toggle like with optimistic update + PATCH. */
   const handleToggleLike = useCallback(
     async (id: string): Promise<void> => {
-      const prevLiked = toggleLike(id); // optimistic
-      // Keep the player store's current song in sync.
+      const prevLiked = toggleLike(id);
       patchCurrent({ liked: !prevLiked });
-      // Keep the detail overlay in sync if it's showing this song.
-      setDetailSong((cur) =>
-        cur && cur.id === id ? { ...cur, liked: !prevLiked } : cur,
-      );
       try {
         const res = await fetch(`/api/songs/${id}`, {
           method: "PATCH",
@@ -95,89 +119,91 @@ export default function Home() {
           body: JSON.stringify({ liked: !prevLiked }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        // Server is the source of truth for the liked flag; we already applied
-        // it optimistically, so on success there's nothing more to do.
       } catch {
-        // Revert on failure.
         toggleLike(id);
         patchCurrent({ liked: Boolean(prevLiked) });
-        setDetailSong((cur) =>
-          cur && cur.id === id ? { ...cur, liked: Boolean(prevLiked) } : cur,
-        );
-        toast({
-          title: "Couldn't update like",
-          variant: "destructive",
-        });
+        toast({ title: "Couldn't update like", variant: "destructive" });
       }
     },
     [toggleLike, patchCurrent, toast],
   );
 
-  /** Delete with optimistic remove + confirm (handled in the card menu). */
+  /** Delete with optimistic remove. */
   const handleDelete = useCallback(
     async (id: string): Promise<void> => {
       const removed = remove(id);
-      if (detailSong?.id === id) setDetailSong(null);
       try {
         const res = await fetch(`/api/songs/${id}`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         toast({ title: "Track deleted" });
       } catch {
         if (removed) restore(removed);
-        toast({
-          title: "Couldn't delete track",
-          variant: "destructive",
-        });
+        toast({ title: "Couldn't delete track", variant: "destructive" });
       }
     },
-    [remove, restore, detailSong, toast],
+    [remove, restore, toast],
   );
 
+  // Next/prev queue: based on the filtered list order.
+  const handleNext = useCallback(() => {
+    if (!current || filteredSongs.length === 0) return;
+    const idx = filteredSongs.findIndex((s) => s.id === current.id);
+    if (idx === -1) return;
+    const next = filteredSongs[(idx + 1) % filteredSongs.length];
+    if (next) playSong(next);
+  }, [current, filteredSongs, playSong]);
+
+  const handlePrev = useCallback(() => {
+    if (!current || filteredSongs.length === 0) return;
+    const idx = filteredSongs.findIndex((s) => s.id === current.id);
+    if (idx === -1) return;
+    const prev = filteredSongs[(idx - 1 + filteredSongs.length) % filteredSongs.length];
+    if (prev) playSong(prev);
+  }, [current, filteredSongs, playSong]);
+
+  const heroTitle =
+    view === "liked" ? "Liked Songs" : view === "library" ? "Your Library" : "Good evening";
+
   return (
-    <div className="music-bg flex min-h-dvh text-foreground">
+    <div className="music-bg flex h-dvh text-foreground">
       <AppSidebar
         view={view}
         onViewChange={setView}
         trackCount={songs.length}
         likedCount={likedCount}
-        likedOnly={likedOnly}
-        onToggleLikedOnly={() => {
-          setLikedOnly((v) => !v);
-          setView("library");
-        }}
         isGenerating={isGenerating}
+        search={search}
+        onSearchChange={setSearch}
       />
 
-      {/* Main column */}
+      {/* Center + right column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8">
+        {/* Main scroll area */}
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <TopBar
+            onCreate={() => setView("create")}
+            isGenerating={isGenerating}
+            search={search}
+            onSearchChange={setSearch}
+            showSearch={view !== "create"}
+          />
+
+          <div className="mx-auto w-full max-w-[1400px] flex-1 px-6 pb-8">
             <AnimatePresence mode="wait">
               {view === "create" ? (
                 <motion.div
-                  key="create-view"
+                  key="create"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.25 }}
+                  transition={{ duration: 0.2 }}
                   className="space-y-6"
                 >
-                  {/* Hero (compact) */}
-                  <div className="text-center sm:text-left">
-                    <span className="inline-flex items-center gap-2 rounded-full border border-fuchsia-400/20 bg-fuchsia-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-fuchsia-200">
-                      <Sparkles className="size-3" aria-hidden />
-                      AI Music Studio
-                    </span>
-                    <h1 className="mt-3 text-balance text-3xl font-bold tracking-tight sm:text-4xl">
-                      Turn <span className="gradient-text">words</span> into music
-                    </h1>
-                    <p className="mt-2 max-w-2xl text-pretty text-sm text-muted-foreground sm:text-base">
-                      Describe a vibe, pick a style, and the Ace Music model renders a
-                      full sung track — vocals, instrumentation, and all — in seconds.
-                    </p>
-                  </div>
+                  {/* Hero greeting */}
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+                    {isGenerating ? "Creating your track…" : "Create something new"}
+                  </h1>
 
-                  {/* Composer OR loader */}
                   {isGenerating ? (
                     <div className="mx-auto max-w-2xl">
                       <GenerationLoader />
@@ -188,38 +214,27 @@ export default function Home() {
                     </div>
                   )}
 
-                  {/* Recent tracks strip (only on create view, when not generating) */}
-                  {!isGenerating && songs.length > 0 && (
-                    <div>
-                      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
-                        Recent tracks
-                      </h2>
-                      <SongFeed
-                        songs={songs.slice(0, 5)}
-                        loading={false}
-                        isGenerating={isGenerating}
-                        likedOnly={false}
-                        onShowDetails={setDetailSong}
-                        onToggleLike={handleToggleLike}
-                        onDelete={handleDelete}
-                      />
-                    </div>
+                  {/* Recently generated carousel */}
+                  {!isGenerating && recentSongs.length > 0 && (
+                    <section>
+                      <h2 className="mb-3 text-lg font-bold">Recently generated</h2>
+                      <Carousel songs={recentSongs} currentId={current?.id} isPlaying={isPlaying} onPlay={playSong} onToggleLike={handleToggleLike} />
+                    </section>
                   )}
                 </motion.div>
               ) : (
                 <motion.div
-                  key="library-view"
+                  key="library"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.25 }}
+                  transition={{ duration: 0.2 }}
+                  className="space-y-4"
                 >
-                  <SongFeed
-                    songs={songs}
+                  <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{heroTitle}</h1>
+                  <TrackList
+                    songs={filteredSongs}
                     loading={songsLoading}
-                    isGenerating={isGenerating}
-                    likedOnly={likedOnly}
-                    onShowDetails={setDetailSong}
                     onToggleLike={handleToggleLike}
                     onDelete={handleDelete}
                   />
@@ -229,16 +244,86 @@ export default function Home() {
           </div>
         </main>
 
-        {/* Sticky bottom player bar */}
-        <BottomPlayer onToggleLike={handleToggleLike} />
+        {/* Sticky bottom player */}
+        <BottomPlayer onToggleLike={handleToggleLike} onNext={handleNext} onPrev={handlePrev} />
       </div>
 
-      {/* Detail overlay */}
-      <SongDetail
-        song={detailSong}
-        onClose={() => setDetailSong(null)}
-        onToggleLike={handleToggleLike}
-      />
+      {/* Right "Now Playing" panel (xl+) */}
+      <NowPlayingPanel song={current} onToggleLike={handleToggleLike} />
+    </div>
+  );
+}
+
+/** Horizontal scroll carousel of song cards (Home view, Spotify "Recently played" style). */
+function Carousel({
+  songs,
+  currentId,
+  isPlaying,
+  onPlay,
+  onToggleLike,
+}: {
+  songs: Song[];
+  currentId?: string;
+  isPlaying: boolean;
+  onPlay: (s: Song) => void;
+  onToggleLike: (id: string) => void;
+}) {
+  return (
+    <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-2">
+      {songs.map((song) => {
+        const isCurrent = song.id === currentId;
+        const showPause = isCurrent && isPlaying;
+        return (
+          <div
+            key={song.id}
+            className="group relative w-44 shrink-0 rounded-lg border border-white/[0.06] bg-white/[0.03] p-3 transition-colors hover:bg-white/[0.08]"
+          >
+            <div className="relative mb-3">
+              <CoverImage
+                id={song.id}
+                src={song.coverUrl}
+                alt={song.title}
+                size={160}
+                rounded="rounded-md"
+                className="w-full !h-auto aspect-square"
+                playing={showPause}
+              />
+              <button
+                type="button"
+                onClick={() => onPlay(song)}
+                aria-label={showPause ? `Pause ${song.title}` : `Play ${song.title}`}
+                className={cn(
+                  "absolute bottom-2 right-2 grid size-11 place-items-center rounded-full bg-fuchsia-500 text-white shadow-lg shadow-fuchsia-500/40 transition-all hover:scale-110 hover:bg-fuchsia-400",
+                  isCurrent ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0",
+                )}
+              >
+                {showPause ? (
+                  <Pause className="size-5" fill="currentColor" aria-hidden />
+                ) : (
+                  <Play className="size-5 translate-x-0.5" fill="currentColor" aria-hidden />
+                )}
+              </button>
+            </div>
+            <p className={cn("truncate text-sm font-semibold", isCurrent ? "text-fuchsia-300" : "text-foreground")} title={song.title}>
+              {song.title}
+            </p>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {song.genre} · {song.mood}
+            </p>
+            <button
+              type="button"
+              onClick={() => onToggleLike(song.id)}
+              aria-label={song.liked ? `Unlike ${song.title}` : `Like ${song.title}`}
+              className={cn(
+                "absolute right-2 top-2 grid size-7 place-items-center rounded-full bg-black/50 backdrop-blur-sm transition-opacity",
+                song.liked ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+              )}
+            >
+              <Heart className={cn("size-3.5", song.liked ? "fill-rose-500 text-rose-500" : "text-white")} aria-hidden />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -47,9 +47,16 @@ function mimeForFormat(format: string): string {
     case "mp3":
       return "audio/mpeg";
     case "wav":
+    case "wav32":
       return "audio/wav";
     case "pcm":
       return "audio/pcm";
+    case "flac":
+      return "audio/flac";
+    case "opus":
+      return "audio/ogg";
+    case "aac":
+      return "audio/aac";
     default:
       return "application/octet-stream";
   }

@@ -39,8 +39,10 @@ import { generateMusic } from "./ace-client";
 /** Successful synthesis result: an audio buffer + format tag. */
 export interface SynthResult {
   buffer: Buffer;
-  /** Always `'mp3'` for the Ace Music cloud API. */
-  format: "mp3" | "wav";
+  /** Audio format produced by the model (default "mp3"). */
+  format: string;
+  /** Seed used for generation (when provided), for reproducibility display. */
+  seedUsed?: number;
 }
 
 /**
@@ -66,6 +68,10 @@ export interface SynthParams {
   thinking?: boolean;
   /** Optional duration override (preferred over `speed` when both present). */
   duration?: number;
+  /** Output audio format: "mp3" | "wav" | "flac" | "opus" | "aac" | "wav32". */
+  audioFormat?: string;
+  /** Optional seed for reproducibility. */
+  seed?: number;
 }
 
 /** Default track duration (seconds) when none is provided. */
@@ -90,6 +96,8 @@ export async function synthesizeAudio(params: SynthParams): Promise<SynthResult>
       keyScale,
       timeSignature,
       thinking,
+      audioFormat,
+      seed,
     } = params;
 
     if (!prompt || !prompt.trim()) {
@@ -116,10 +124,16 @@ export async function synthesizeAudio(params: SynthParams): Promise<SynthResult>
       bpm,
       keyScale,
       timeSignature,
+      audioFormat,
       thinking,
+      seed,
     });
 
-    return { buffer: result.buffer, format: "mp3" };
+    return {
+      buffer: result.buffer,
+      format: result.format,
+      seedUsed: result.seedUsed,
+    };
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(`Audio synthesis failed: ${cause}`);

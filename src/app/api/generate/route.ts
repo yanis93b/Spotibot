@@ -34,9 +34,12 @@ import {
   MOODS,
   STYLES,
   LANGUAGES,
+  AUDIO_FORMATS,
+  MUSICAL_KEYS,
+  TIME_SIGNATURES,
   STYLE_TO_CAPTION,
 } from "@/lib/types";
-import { generateLyrics, synthesizeAudio } from "@/lib/ai";
+import { generateLyrics, synthesizeAudio, generateCover } from "@/lib/ai";
 import { toPublicSong } from "@/lib/song-mapper";
 
 // ---------------------------------------------------------------------------
@@ -110,6 +113,12 @@ const generateSchema = z.object({
     .min(1, "Title cannot be empty")
     .max(80, "Title must be at most 80 characters")
     .optional(),
+  // Advanced model params (all optional).
+  audioFormat: z.enum(AUDIO_FORMATS.map((f) => f.code) as [string, ...string[]]).optional(),
+  bpm: z.number().int().min(30).max(300).optional(),
+  keyScale: z.enum(MUSICAL_KEYS as [string, ...string[]]).optional(),
+  timeSignature: z.enum(TIME_SIGNATURES.map((t) => t.code) as [string, ...string[]]).optional(),
+  seed: z.number().int().min(0).max(4294967295).optional(),
 });
 
 /**
@@ -190,6 +199,11 @@ export async function POST(req: NextRequest) {
     highQuality = false,
     customLyrics,
     customTitle,
+    audioFormat = "mp3",
+    bpm,
+    keyScale,
+    timeSignature,
+    seed,
   } = parsed.data;
 
   // Compose the musical caption for the Ace Music model.
@@ -211,29 +225,31 @@ export async function POST(req: NextRequest) {
       lyrics = out.lyrics;
     }
 
-    // 5. Synthesize the full track via the Ace Music model.
-    //    The model performs text→music (vocals + instrumentation) from the
-    //    caption + lyrics in a single synchronous request and returns an MP3.
-    const { buffer, format } = await synthesizeAudio({
-      prompt: caption,
-      text: lyrics,
-      duration,
-      language,
-      thinking: highQuality,
-    });
+    // 5. Synthesize audio + generate cover art IN PARALLEL.
+    //    These two AI calls are independent (audio needs lyrics; cover needs
+    //    title+genre+mood), so we fire them concurrently to minimize wall-clock
+    //    latency. Cover generation is best-effort — a failure yields null and
+    //    the UI falls back to a gradient cover.
+    const [audioResult, coverResult] = await Promise.all([
+      synthesizeAudio({
+        prompt: caption,
+        text: lyrics,
+        duration,
+        language,
+        thinking: highQuality,
+        audioFormat,
+        bpm,
+        keyScale: keyScale || undefined,
+        timeSignature: timeSignature || undefined,
+        seed,
+      }),
+      generateCover({ title, genre, mood, prompt }),
+    ]);
 
-    // Prisma's `Bytes` scalar is typed as `Uint8Array<ArrayBuffer>`, while the
-    // synth adapter returns a Node `Buffer` (which extends `Uint8Array` and is
-    // always backed by a real `ArrayBuffer` at runtime). Prisma's runtime
-    // happily accepts a Buffer, so this assertion is a purely type-level
-    // adjustment (no data is copied or converted).
-    const audioBytes = buffer as Uint8Array<ArrayBuffer>;
-
-    // Duration in milliseconds for the UI (server-side best-effort estimate
-    // from the requested duration; the model aims for the requested length).
+    const audioBytes = audioResult.buffer as Uint8Array<ArrayBuffer>;
     const durationMs = Math.round(duration * 1000);
 
-    // 6. Persist the song (audio bytes stored inline in SQLite).
+    // 6. Persist the song (audio + cover bytes stored inline in SQLite).
     const row = await db.song.create({
       data: {
         title,
@@ -242,14 +258,16 @@ export async function POST(req: NextRequest) {
         genre,
         mood,
         style,
-        // Store the requested language as the "voice" field (back-compat with
-        // the Song schema). The Ace Music adapter no longer uses TTS voice ids.
         voice: language,
         audioData: audioBytes,
-        // Persist the format actually produced by the synth adapter so the
-        // streaming route can set the correct Content-Type / file extension.
-        audioFormat: format,
+        audioFormat: audioResult.format,
         durationMs,
+        coverData: coverResult?.buffer ?? undefined,
+        coverFormat: coverResult?.format ?? "png",
+        bpm: bpm ?? null,
+        keyScale: keyScale || null,
+        timeSig: timeSignature || null,
+        seed: audioResult.seedUsed != null ? BigInt(audioResult.seedUsed) : null,
       },
     });
 
