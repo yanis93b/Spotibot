@@ -4,9 +4,10 @@ import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Heart, Play, Pause, Clock, MoreHorizontal, Trash2, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Song } from "@/lib/types";
+import type { Playlist, Song } from "@/lib/types";
 import { usePlayerStore } from "@/lib/player-store";
 import { CoverImage } from "./cover-image";
+import { AddToPlaylistMenu } from "./add-to-playlist-menu";
 
 export interface TrackListProps {
   songs: Song[];
@@ -17,6 +18,12 @@ export interface TrackListProps {
   title?: string;
   /** Show the full table header (Spotify-style). Default true. */
   showHeader?: boolean;
+  /** Playlists the user can add a track to (shown in the more menu). */
+  playlists?: Playlist[];
+  /** Add a song to a playlist. */
+  onAddToPlaylist?: (playlistId: string, songId: string) => Promise<void>;
+  /** Open the create-playlist dialog. */
+  onCreatePlaylist?: () => void;
 }
 
 /** Format ms → m:ss. */
@@ -40,6 +47,9 @@ export function TrackList({
   onDelete,
   title,
   showHeader = true,
+  playlists,
+  onAddToPlaylist,
+  onCreatePlaylist,
 }: TrackListProps) {
   const sorted = useMemo(
     () =>
@@ -94,6 +104,9 @@ export function TrackList({
                 index={i + 1}
                 onToggleLike={onToggleLike}
                 onDelete={onDelete}
+                playlists={playlists}
+                onAddToPlaylist={onAddToPlaylist}
+                onCreatePlaylist={onCreatePlaylist}
               />
             ))}
           </AnimatePresence>
@@ -108,11 +121,17 @@ function TrackRow({
   index,
   onToggleLike,
   onDelete,
+  playlists,
+  onAddToPlaylist,
+  onCreatePlaylist,
 }: {
   song: Song;
   index: number;
   onToggleLike: (id: string) => void;
   onDelete: (id: string) => void;
+  playlists?: Playlist[];
+  onAddToPlaylist?: (playlistId: string, songId: string) => Promise<void>;
+  onCreatePlaylist?: () => void;
 }) {
   const current = usePlayerStore((s) => s.current);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
@@ -239,9 +258,23 @@ function TrackRow({
         {menuOpen && (
           <div
             role="menu"
-            className="absolute bottom-full right-0 z-20 mb-1 w-40 overflow-hidden rounded-lg border border-white/10 bg-[#1a1a22] shadow-xl"
+            className="absolute bottom-full right-0 z-20 mb-1 w-56 overflow-visible rounded-lg border border-white/10 bg-[#1a1a22] py-1 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
+            {/* Add to playlist (with nested submenu) */}
+            {playlists && onAddToPlaylist && onCreatePlaylist && (
+              <AddToPlaylistMenu
+                songId={song.id}
+                playlists={playlists}
+                onAdd={onAddToPlaylist}
+                onCreateNew={() => {
+                  setMenuOpen(false);
+                  onCreatePlaylist();
+                }}
+                triggerClassName="w-full"
+              />
+            )}
+            <div className="mx-2 my-1 border-t border-white/[0.06]" />
             <button
               type="button"
               role="menuitem"

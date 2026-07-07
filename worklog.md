@@ -308,3 +308,40 @@ Stage Summary:
 - AI cover art generation works (parallel with audio, 1024x1024 PNG, gradient fallback).
 - ALL Ace Music model parameters exposed: BPM, key, time signature, audio format (mp3/wav/flac/opus/aac/wav32), seed (reproducible), high-quality LM planning, duration, language, custom lyrics.
 - Lint clean, no runtime errors, all features verified end-to-end.
+
+---
+Task ID: 9 (Playlists + mobile nav + keyboard + home polish)
+Agent: orchestrator
+Task: Continue developing toward a full Spotify clone — add playlists, mobile navigation, keyboard shortcuts, and home-page polish.
+
+Work Log:
+- Backend: added Playlist + PlaylistSong models (join table with position + unique [playlistId, songId] + cascade deletes) to Prisma schema; db:push.
+- Added Playlist type to types.ts + playlist-mapper.ts (computes trackCount + durationMs from joined items).
+- API routes: GET/POST /api/playlists (list + create), GET/PATCH/DELETE /api/playlists/[id] (single + rename + delete), POST/DELETE /api/playlists/[id]/tracks (add/remove track with position re-packing). All zod-validated, Prisma P2025→404, P2002→400 (duplicate).
+- Frontend hook: use-playlists.ts (initial fetch + create/rename/remove/addTrack/removeTrack/fetchPlaylist with optimistic updates).
+- Create-playlist dialog (create-playlist-dialog.tsx): modal with name input, validation, loading state.
+- Add-to-playlist menu (add-to-playlist-menu.tsx): nested dropdown listing playlists, with per-playlist spinner + check on add, "Create new playlist" entry. Integrated into the TrackList "more" menu.
+- Mobile bottom nav (mobile-nav.tsx): Spotify-style tab bar (Home/Search/Library/Liked/Create) shown only on mobile (sidebar hidden below sm).
+- Keyboard shortcuts hook (use-keyboard-shortcuts.ts): Space/K=play-pause, ←/→=seek 5s, ↑/↓=volume, M=mute, L=like current, N=next, P=prev. Ignores when typing in inputs.
+- Sidebar updated: new "Playlists" section listing user playlists (deterministic gradient covers) + "Create Playlist" row; SidebarView type extended with "playlist".
+- Home polish: time-based greeting ("Good morning/afternoon/evening"), quick-access tiles (Liked Songs + 2 recent tracks, Spotify Home style).
+- Playlist view: banner header (gradient cover + name + track count + duration + Play All + Delete) + TrackList of the playlist's songs.
+- page.tsx rewritten: orchestrates create/library/liked/playlist views, mobile nav, keyboard shortcuts, create-playlist dialog, playlist open/add/delete. Queue (next/prev) navigates the current view's list.
+- Restarted dev server (rm -rf .next) for new Prisma client.
+- `bun run lint` → clean.
+
+Agent Browser verification:
+- Home: "Good evening" greeting (time-based), quick-access tiles, Recently generated carousel.
+- Mobile (390x844): sidebar hidden, mobile bottom nav with Home/Search/Library/Liked/Create tabs.
+- Create playlist: dialog opens, named "Late Night Vibes", POST /api/playlists 200, appears in sidebar, toast "Playlist created".
+- Add to playlist: track "More" menu → "Add to playlist" submenu lists playlists + "Create new playlist"; added "Neon Dreams" → POST /api/playlists/{id}/tracks 200; API confirms "Late Night Vibes: 1 track".
+- Playlist view: clicking playlist opens banner header (gradient cover + "Late Night Vibes" + "1 track" + Play All + Delete) + TrackList with the track.
+- Keyboard shortcuts: pressed Space → bottom player center button toggled Play→Pause (verified via aria-label). All transport buttons present (Shuffle/Prev/Play-Pause/Next/Repeat/Queue/Mute/Fullscreen).
+- Dev log: all playlist operations 200, no errors.
+
+Stage Summary:
+- Full Spotify-like playlist system: create / rename / delete / add track / remove track / view, with ordered positions + cascade deletes.
+- Mobile navigation bar (the sidebar is hidden on mobile; the bottom tab bar fills the gap).
+- Keyboard shortcuts (Space, arrows, M, L, N, P) — verified Space toggles play/pause.
+- Home page polish: time-based greeting + quick-access tiles + carousel.
+- Lint clean, all features verified end-to-end in the browser.

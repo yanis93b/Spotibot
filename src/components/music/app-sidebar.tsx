@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { AceStatusIndicator } from "./ace-status-indicator";
 
-export type SidebarView = "create" | "library" | "liked";
+export type SidebarView = "create" | "library" | "liked" | "playlist";
 
 export interface AppSidebarProps {
   view: SidebarView;
@@ -25,6 +25,14 @@ export interface AppSidebarProps {
   /** Search query (drives the Library filter). */
   search: string;
   onSearchChange: (q: string) => void;
+  /** The user's playlists (rendered under Library). */
+  playlists: Array<{ id: string; name: string; trackCount: number }>;
+  /** Open the create-playlist dialog. */
+  onCreatePlaylist: () => void;
+  /** Open a specific playlist view. */
+  onOpenPlaylist: (id: string) => void;
+  /** The currently-open playlist id (for highlight). */
+  activePlaylistId?: string | null;
 }
 
 /**
@@ -40,6 +48,10 @@ export function AppSidebar({
   isGenerating,
   search,
   onSearchChange,
+  playlists,
+  onCreatePlaylist,
+  onOpenPlaylist,
+  activePlaylistId,
 }: AppSidebarProps) {
   return (
     <aside
@@ -151,10 +163,10 @@ export function AppSidebar({
           </div>
         )}
 
-        {/* Library list (All / Liked entries) */}
+        {/* Library list (All / Liked entries + playlists) */}
         <div className="-mr-1 flex-1 overflow-y-auto pr-1">
           <LibraryEntry
-            active={view === "library"}
+            active={view === "library" && !activePlaylistId}
             onClick={() => onViewChange("library")}
             icon={<ListMusic className="size-5" aria-hidden />}
             title="All Tracks"
@@ -171,6 +183,46 @@ export function AppSidebar({
             title="Liked Songs"
             subtitle={`${likedCount} ${likedCount === 1 ? "track" : "tracks"}`}
           />
+
+          {/* Playlists divider + create button */}
+          {playlists.length > 0 && (
+            <div className="px-2 pb-1 pt-3">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                Playlists
+              </span>
+            </div>
+          )}
+          {playlists.map((p) => (
+            <LibraryEntry
+              key={p.id}
+              active={activePlaylistId === p.id}
+              onClick={() => onOpenPlaylist(p.id)}
+              icon={
+                <span
+                  className="grid size-12 place-items-center rounded-md"
+                  style={{
+                    background: `linear-gradient(135deg, hsl(${hueFromName(p.name)} 65% 48%), hsl(${(hueFromName(p.name) + 60) % 360} 65% 42%))`,
+                  }}
+                >
+                  <ListMusic className="size-5 text-white/90" aria-hidden />
+                </span>
+              }
+              title={p.name}
+              subtitle={`Playlist · ${p.trackCount} ${p.trackCount === 1 ? "track" : "tracks"}`}
+            />
+          ))}
+
+          {/* Create playlist row */}
+          <button
+            type="button"
+            onClick={onCreatePlaylist}
+            className="mt-1 flex w-full items-center gap-3 rounded-md p-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-white"
+          >
+            <span className="grid size-12 place-items-center rounded-md border border-dashed border-white/15 bg-white/[0.02]">
+              <Plus className="size-5" aria-hidden />
+            </span>
+            <span className="font-medium">Create Playlist</span>
+          </button>
         </div>
       </div>
 
@@ -276,6 +328,13 @@ function LibraryEntry({
       </span>
     </button>
   );
+}
+
+/** Deterministic hue (0–360) for a playlist's gradient, derived from its name. */
+function hueFromName(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return h;
 }
 
 export default AppSidebar;

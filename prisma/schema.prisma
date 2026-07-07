@@ -15,7 +15,7 @@ datasource db {
 // (small files, demo-scale) and streamed back to the client via the
 // /api/audio/[id] and /api/cover/[id] routes.
 model Song {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   title       String
   prompt      String
   lyrics      String
@@ -39,6 +39,36 @@ model Song {
   liked       Boolean  @default(false)
   createdAt   DateTime @default(now())
 
+  playlistItems PlaylistSong[]
+
   @@index([createdAt])
   @@index([liked])
+}
+
+// A user-created playlist (Spotify-style). Playlists group songs in a
+// user-defined order. The cover is a gradient derived from the playlist name
+// (no AI cover for playlists — keeps the feature lightweight).
+model Playlist {
+  id        String         @id @default(cuid())
+  name      String
+  createdAt DateTime       @default(now())
+  items     PlaylistSong[]
+
+  @@index([createdAt])
+}
+
+// Join table between Playlist and Song with an explicit `position` field so
+// tracks keep their user-defined order inside a playlist.
+model PlaylistSong {
+  id         String   @id @default(cuid())
+  playlistId String
+  songId     String
+  position   Int
+  addedAt    DateTime @default(now())
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, songId])
+  @@index([playlistId, position])
 }

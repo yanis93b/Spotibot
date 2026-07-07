@@ -63,6 +63,18 @@ export interface GenerateRequest {
   seed?: number;
 }
 
+/** A user-created playlist (Spotify-style). */
+export interface Playlist {
+  id: string;
+  name: string;
+  /** Number of tracks in the playlist. */
+  trackCount: number;
+  /** Total duration in milliseconds (sum of track durations). */
+  durationMs: number;
+  /** ISO 8601 creation timestamp. */
+  createdAt: string;
+}
+
 export interface ApiError {
   error: string;
 }
