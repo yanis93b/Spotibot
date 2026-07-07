@@ -25,7 +25,9 @@ model Song {
   audioData   Bytes
   audioFormat String   @default("mp3")
   durationMs  Int      @default(0)
+  liked       Boolean  @default(false)
   createdAt   DateTime @default(now())
 
   @@index([createdAt])
+  @@index([liked])
 }

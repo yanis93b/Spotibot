@@ -231,3 +231,33 @@ Stage Summary:
 - API key is server-only (env), never exposed to the client.
 - All Suno core functions verified end-to-end: prompt → lyrics → music → play → download → history → delete, responsive + sticky footer.
 - Adapter is still swappable: to point at a self-hosted ACE-Step server later, only src/lib/ai/ace-client.ts needs to change.
+
+---
+Task ID: 7 (Suno-style redesign round)
+Agent: orchestrator
+Task: Redesign the interface to closely match Suno (sidebar + bottom player + card grid + custom mode + likes), make all functions work, verify.
+
+Work Log:
+- Backend: added `liked Boolean @default(false)` to Song schema + index; ran db:push; added PATCH /api/songs/[id] (toggles liked, returns updated public Song); added customLyrics/customTitle to GenerateRequest + zod schema; generate route now skips the LLM lyricist when customLyrics is provided and derives a title from the first lyric line.
+- Frontend architecture: created src/lib/player-store.ts (Zustand) — single shared <audio> element owned by the bottom player, with playSong/togglePlay/seek/volume/like-patch actions. This is the Suno "one player, many controls" model.
+- New components: app-sidebar.tsx (Create/Library/Liked nav, collapses to 64px icon rail on mobile), bottom-player.tsx (sticky bottom bar — cover, title, like, transport, seek, volume, lyrics drawer, download; owns the <audio> element), song-card.tsx (square gradient cover, hover play overlay, like/download/delete menu), song-feed.tsx (responsive grid + skeletons + empty states + liked filter), song-detail.tsx (full-screen overlay with cover, tags, prompt, full lyrics, transport, like, download).
+- Updated prompt-composer.tsx: added Simple/Custom mode toggle (Suno-style tabs). Custom mode reveals a Title field + a monospace Lyrics editor; validation requires >=20 chars. The generate request carries customLyrics/customTitle when in custom mode.
+- Updated use-songs.ts: added optimistic toggleLike helper. Updated page.tsx: new layout = sidebar + main (Create/Library views via AnimatePresence) + sticky bottom player + detail overlay. Generate → auto-play + flip to Library. Like → optimistic + PATCH + revert on error. Delete → optimistic + DELETE.
+- Cleared stale Prisma client cache (killed dev server, rm -rf .next, restarted) so the `liked` field is recognized.
+- `bun run lint` → clean.
+
+Agent Browser verification (real Ace Music model):
+- Sidebar renders Create/Library/Liked; Ace Music online status; collapses to 64px icon rail on mobile (verified via DOM: aside width=64).
+- Simple mode: generated "Rainy Study Session" (Lo-Fi/Dreamy/Female Vocal, 30s). POST /api/generate 200 in ~18s. Auto-played, bottom player slid up (Pause button = playing), view flipped to Library, card appeared in grid.
+- Bottom player: cover + title + genre·mood tags, like button, play/pause, seek slider (0:16/0:30), volume slider, lyrics toggle, download link — all functional.
+- Like: clicked card like button → PATCH /api/songs/{id} 200 → card + bottom player both updated to "Unlike"/liked state. Reloaded page → like PERSISTED (DB-backed).
+- Liked filter: clicking "Liked" in sidebar shows only liked tracks ("Liked Tracks" heading, only the liked song visible).
+- Detail overlay: clicking a card opens a full dialog with cover, title, tags, duration badge, prompt, full lyrics, Play/Like/Download actions; closes on X.
+- Custom mode: switched to Custom tab → Title + Lyrics fields appeared. Filled "Midnight Highway" + my own lyrics. Generated → POST /api/generate 200 in 18.4s (faster, LLM skipped). Verified the detail overlay shows MY lyrics verbatim (not LLM-generated) — "Driving down the highway at midnight...". Ace Music rendered my lyrics into sung music.
+- Mobile (390x844): sidebar = 64px icon rail, cards stack 2-wide, bottom player visible with condensed controls, root = min-h-dvh flex. Sticky footer confirmed.
+- No console/runtime errors. demo-suno.webm recorded (1.5M).
+
+Stage Summary:
+- The interface now closely matches Suno: left sidebar nav, sticky bottom player bar (signature), responsive card grid, Simple/Custom mode toggle, like/favorites with DB persistence, detail overlay.
+- ALL functions verified working: generate (simple + custom), play/pause, seek, volume, like (persistent), download, delete, lyrics view, liked filter, responsive mobile.
+- Real Ace Music model drives everything; custom mode skips the LLM and renders user-supplied lyrics directly.

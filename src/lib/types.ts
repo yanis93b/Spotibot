@@ -16,6 +16,8 @@ export interface Song {
   audioFormat: string;
   /** Approximate playback duration in milliseconds (0 if unknown). */
   durationMs: number;
+  /** True when the user has liked/favorited this track. */
+  liked: boolean;
   /** ISO 8601 creation timestamp. */
   createdAt: string;
 }
@@ -32,6 +34,13 @@ export interface GenerateRequest {
   language?: string;
   /** Enable higher-quality (slower) 5Hz LM planning. Optional, default false. */
   highQuality?: boolean;
+  /**
+   * Custom mode: when provided, the user wrote their own lyrics and the LLM
+   * lyricist is skipped. The Ace Music model renders these lyrics directly.
+   */
+  customLyrics?: string;
+  /** Optional custom title (custom mode). If absent, one is derived. */
+  customTitle?: string;
 }
 
 export interface ApiError {

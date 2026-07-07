@@ -96,7 +96,37 @@ const generateSchema = z.object({
     .optional(),
   language: z.enum(LANGUAGE_CODES as [string, ...string[]]).optional(),
   highQuality: z.boolean().optional(),
+  // Custom mode: user-supplied lyrics (and optional title). When provided,
+  // the LLM lyricist is skipped and the Ace Music model renders these lyrics.
+  customLyrics: z
+    .string()
+    .trim()
+    .min(20, "Custom lyrics must be at least 20 characters")
+    .max(2000, "Custom lyrics must be at most 2000 characters")
+    .optional(),
+  customTitle: z
+    .string()
+    .trim()
+    .min(1, "Title cannot be empty")
+    .max(80, "Title must be at most 80 characters")
+    .optional(),
 });
+
+/**
+ * Derive a short title from custom lyrics when the user didn't provide one.
+ * Picks the first non-empty, non-tag line (skipping [Verse]/[Chorus] markers)
+ * and truncates it to a reasonable title length.
+ */
+function deriveTitleFromLyrics(lyrics: string): string {
+  const lines = lyrics
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("["));
+  const first = lines[0] ?? "";
+  // Take at most ~6 words.
+  const words = first.split(/\s+/).slice(0, 6).join(" ");
+  return words.length > 0 ? words.slice(0, 60) : "";
+}
 
 /**
  * Compose the musical caption that the Ace Music model consumes. The caption
@@ -158,19 +188,28 @@ export async function POST(req: NextRequest) {
     duration = 30,
     language = "en",
     highQuality = false,
+    customLyrics,
+    customTitle,
   } = parsed.data;
 
   // Compose the musical caption for the Ace Music model.
   const caption = buildCaption({ prompt, genre, mood, style });
 
   try {
-    // 4. Generate lyrics via the LLM lyricist.
-    const { title, lyrics } = await generateLyrics({
-      prompt,
-      genre,
-      mood,
-      style,
-    });
+    // 4. Obtain lyrics + title.
+    //    In Custom mode the user wrote their own lyrics, so we skip the LLM
+    //    lyricist entirely. Otherwise, ask the LLM to write structured lyrics
+    //    from the prompt + genre + mood + style.
+    let title: string;
+    let lyrics: string;
+    if (customLyrics && customLyrics.trim()) {
+      title = (customTitle && customTitle.trim()) || deriveTitleFromLyrics(customLyrics) || "Untitled";
+      lyrics = customLyrics.trim();
+    } else {
+      const out = await generateLyrics({ prompt, genre, mood, style });
+      title = out.title;
+      lyrics = out.lyrics;
+    }
 
     // 5. Synthesize the full track via the Ace Music model.
     //    The model performs text→music (vocals + instrumentation) from the

@@ -27,6 +27,7 @@ export function toPublicSong(row: DbSong): Song {
     audioUrl: `/api/audio/${row.id}`,
     audioFormat: row.audioFormat,
     durationMs: row.durationMs,
+    liked: row.liked,
     createdAt: row.createdAt.toISOString(),
   };
 }

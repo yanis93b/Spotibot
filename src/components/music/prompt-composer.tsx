@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages } from "lucide-react";
+import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages, FileText, Type } from "lucide-react";
 import { motion } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
@@ -18,6 +18,7 @@ import {
 } from "@/lib/types";
 
 const MAX_PROMPT = 500;
+const MAX_LYRICS = 2000;
 
 /** Curated example prompts used by the "Surprise me" randomizer. */
 const SAMPLE_PROMPTS: readonly string[] = [
@@ -51,7 +52,10 @@ export interface PromptComposerProps {
  * controlled by the parent for clean data flow.
  */
 export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
+  const [mode, setMode] = useState<"simple" | "custom">("simple");
   const [prompt, setPrompt] = useState("");
+  const [customLyrics, setCustomLyrics] = useState("");
+  const [customTitle, setCustomTitle] = useState("");
   const [genre, setGenre] = useState<string>(GENRES[0]);
   const [mood, setMood] = useState<string>(MOODS[0]);
   const [style, setStyle] = useState<string>(STYLES[0]);
@@ -60,7 +64,11 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
   const [highQuality, setHighQuality] = useState<boolean>(false);
 
   const remaining = MAX_PROMPT - prompt.length;
-  const canSubmit = prompt.trim().length > 0 && !loading;
+  const lyricsRemaining = MAX_LYRICS - customLyrics.length;
+  const canSubmit =
+    !loading &&
+    prompt.trim().length > 0 &&
+    (mode === "simple" || customLyrics.trim().length >= 20);
   // Rough wall-clock estimate for the UI. Ace Music takes ~0.8x duration
   // (standard) or ~1.8x (high-quality LM planning), plus fixed overhead.
   const estimatedSeconds = highQuality
@@ -89,6 +97,9 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
       duration,
       language,
       highQuality,
+      ...(mode === "custom"
+        ? { customLyrics: customLyrics.trim(), customTitle: customTitle.trim() || undefined }
+        : {}),
     };
     // Parent handles success/error toasts + state mutation. We swallow
     // rejection here so the composer doesn't crash on a failed request —
@@ -129,9 +140,47 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
               Create your song
             </h2>
             <p className="text-xs text-muted-foreground">
-              Describe a vibe, pick a style, and let Ace Music compose.
+              {mode === "simple"
+                ? "Describe a vibe, pick a style, and let Ace Music compose."
+                : "Write your own lyrics — Ace Music will arrange and sing them."}
             </p>
           </div>
+        </div>
+
+        {/* Simple / Custom mode toggle (Suno-style) */}
+        <div
+          role="tablist"
+          aria-label="Creation mode"
+          className="flex shrink-0 rounded-lg border border-white/10 bg-black/30 p-0.5"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "simple"}
+            onClick={() => setMode("simple")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[11px] font-medium transition-all sm:px-3 sm:text-xs",
+              mode === "simple"
+                ? "bg-gradient-to-r from-fuchsia-500/80 to-purple-500/80 text-white"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Simple
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "custom"}
+            onClick={() => setMode("custom")}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[11px] font-medium transition-all sm:px-3 sm:text-xs",
+              mode === "custom"
+                ? "bg-gradient-to-r from-fuchsia-500/80 to-purple-500/80 text-white"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Custom
+          </button>
         </div>
       </div>
 
@@ -158,6 +207,67 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
           {prompt.length}/{MAX_PROMPT}
         </span>
       </div>
+
+      {/* Custom mode: title + lyrics editors (Suno "Custom" panel) */}
+      {mode === "custom" && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          exit={{ opacity: 0, height: 0 }}
+          className="mt-4 space-y-3"
+        >
+          <div>
+            <label
+              htmlFor="custom-title"
+              className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80"
+            >
+              <Type className="size-3" aria-hidden /> Title (optional)
+            </label>
+            <input
+              id="custom-title"
+              type="text"
+              value={customTitle}
+              onChange={(e) => setCustomTitle(e.target.value.slice(0, 80))}
+              disabled={loading}
+              maxLength={80}
+              placeholder="e.g. Neon Dreams"
+              className="h-10 w-full rounded-xl border border-white/10 bg-black/30 px-3 text-sm placeholder:text-muted-foreground/60 focus-visible:border-fuchsia-400/40"
+            />
+          </div>
+          <div className="relative">
+            <label
+              htmlFor="custom-lyrics"
+              className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80"
+            >
+              <FileText className="size-3" aria-hidden /> Lyrics
+            </label>
+            <Textarea
+              id="custom-lyrics"
+              value={customLyrics}
+              onChange={(e) => setCustomLyrics(e.target.value.slice(0, MAX_LYRICS))}
+              disabled={loading}
+              maxLength={MAX_LYRICS}
+              placeholder={"Write your lyrics here…\n[Verse 1]\n...\n[Chorus]\n..."}
+              aria-label="Custom lyrics"
+              className="min-h-[160px] resize-y rounded-xl border-white/10 bg-black/30 px-4 py-3 font-mono text-sm leading-relaxed placeholder:text-muted-foreground/60 focus-visible:border-fuchsia-400/40"
+            />
+            <span
+              className={cn(
+                "pointer-events-none absolute bottom-2 right-3 text-[11px] tabular-nums",
+                lyricsRemaining < 100 ? "text-rose-300" : "text-muted-foreground/70",
+              )}
+              aria-hidden
+            >
+              {customLyrics.length}/{MAX_LYRICS}
+            </span>
+          </div>
+          {customLyrics.trim().length > 0 && customLyrics.trim().length < 20 && (
+            <p className="text-[11px] text-amber-300/80">
+              Lyrics need at least 20 characters.
+            </p>
+          )}
+        </motion.div>
+      )}
 
       {/* Chip selectors */}
       <div className="mt-4 space-y-3">

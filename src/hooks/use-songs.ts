@@ -13,16 +13,18 @@ export interface UseSongsResult {
   remove: (id: string) => Song | undefined;
   /** Restore a previously-removed song (e.g. when DELETE fails). */
   restore: (song: Song) => void;
+  /** Optimistically toggle a song's liked flag by id. Returns the previous value for rollback. */
+  toggleLike: (id: string) => boolean | undefined;
   /** Replace the full list (used after a refetch). */
   setSongs: (songs: Song[]) => void;
 }
 
 /**
  * Lightweight client-state hook for the song library. Encapsulates the
- * initial GET /api/songs fetch plus optimistic prepend/remove helpers the
- * page can use during generate / delete flows.
+ * initial GET /api/songs fetch plus optimistic prepend/remove/toggleLike
+ * helpers the page can use during generate / delete / like flows.
  *
- * Networking for create/delete is owned by the page (so it can drive
+ * Networking for create/delete/like is owned by the page (so it can drive
  * toast + generating state); this hook only manages the list itself.
  */
 export function useSongs(): UseSongsResult {
@@ -75,11 +77,25 @@ export function useSongs(): UseSongsResult {
     );
   }, []);
 
+  const toggleLike = useCallback((id: string): boolean | undefined => {
+    let prevLiked: boolean | undefined;
+    setSongsState((prev) =>
+      prev.map((s) => {
+        if (s.id === id) {
+          prevLiked = s.liked;
+          return { ...s, liked: !s.liked };
+        }
+        return s;
+      }),
+    );
+    return prevLiked;
+  }, []);
+
   const setSongs = useCallback((next: Song[]) => {
     setSongsState(next);
   }, []);
 
-  return { songs, loading, error, prepend, remove, restore, setSongs };
+  return { songs, loading, error, prepend, remove, restore, toggleLike, setSongs };
 }
 
 export default useSongs;
