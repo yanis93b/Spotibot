@@ -122,8 +122,10 @@ export default function Home() {
               Turn <span className="gradient-text">words</span> into music
             </h1>
             <p className="mx-auto mt-3 max-w-xl text-pretty text-sm text-muted-foreground sm:text-base">
-              Describe a vibe, pick a style, and the Ace Music model composes
-              original lyrics and synthesizes a vocal track in seconds.
+              Describe a vibe, pick a style, and the{" "}
+              <span className="text-fuchsia-200">Ace Music</span> model composes
+              original lyrics and renders a full sung track — vocals, instrumentation,
+              and all — in seconds.
             </p>
           </motion.div>
 

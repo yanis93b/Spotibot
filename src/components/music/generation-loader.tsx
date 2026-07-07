@@ -13,10 +13,10 @@ import { EqualizerBars } from "./equalizer-bars";
  * and a cycling stage label. A shimmering progress bar runs underneath.
  */
 const STAGES = [
-  "Composing lyrics with the LLM…",
-  "Arranging verses & chorus…",
-  "Synthesizing audio with Ace Music…",
-  "Mastering your track…",
+  "Writing lyrics with the LLM lyricist…",
+  "Composing the instrumental arrangement…",
+  "Synthesizing vocals & music with Ace Music…",
+  "Rendering the final mix…",
 ] as const;
 
 export function GenerationLoader() {
@@ -71,7 +71,7 @@ export function GenerationLoader() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        This usually takes 10–20 seconds.
+        The Ace Music model renders a full sung track — this usually takes 15–40 seconds.
       </p>
     </div>
   );

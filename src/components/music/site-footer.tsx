@@ -35,7 +35,16 @@ export function SiteFooter({ className }: SiteFooterProps) {
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
           <Heart className="size-3 text-fuchsia-400" aria-hidden />
           <span>
-            Audio is synthesized via TTS — vocals may sound spoken rather than sung.
+            Powered by the open-source{" "}
+            <a
+              href="https://github.com/ace-step/ACE-Step-1.5"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline decoration-fuchsia-400/40 underline-offset-2 transition-colors hover:text-fuchsia-200"
+            >
+              ACE-Step v1.5
+            </a>{" "}
+            model · real text-to-music synthesis.
           </span>
         </p>
       </div>

@@ -1,15 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Shuffle, Sparkles, Wand2 } from "lucide-react";
+import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages } from "lucide-react";
 import { motion } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   GENRES,
   MOODS,
   STYLES,
-  STYLE_TO_VOICE,
+  LANGUAGES,
   type GenerateRequest,
   type Song,
 } from "@/lib/types";
@@ -52,9 +55,17 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
   const [genre, setGenre] = useState<string>(GENRES[0]);
   const [mood, setMood] = useState<string>(MOODS[0]);
   const [style, setStyle] = useState<string>(STYLES[0]);
+  const [duration, setDuration] = useState<number>(30);
+  const [language, setLanguage] = useState<string>("en");
+  const [highQuality, setHighQuality] = useState<boolean>(false);
 
   const remaining = MAX_PROMPT - prompt.length;
   const canSubmit = prompt.trim().length > 0 && !loading;
+  // Rough wall-clock estimate for the UI. Ace Music takes ~0.8x duration
+  // (standard) or ~1.8x (high-quality LM planning), plus fixed overhead.
+  const estimatedSeconds = highQuality
+    ? Math.round(duration * 1.8 + 8)
+    : Math.round(duration * 0.8 + 6);
 
   /** Pick a deterministic-ish random element from a readonly tuple. */
   const pickRandom = <T,>(arr: readonly T[]): T =>
@@ -65,6 +76,7 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
     setGenre(pickRandom(GENRES));
     setMood(pickRandom(MOODS));
     setStyle(pickRandom(STYLES));
+    setLanguage(pickRandom(LANGUAGES).code);
   };
 
   const handleSubmit = async () => {
@@ -74,7 +86,9 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
       genre,
       mood,
       style,
-      voice: STYLE_TO_VOICE[style],
+      duration,
+      language,
+      highQuality,
     };
     // Parent handles success/error toasts + state mutation. We swallow
     // rejection here so the composer doesn't crash on a failed request —
@@ -170,6 +184,78 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
         />
       </div>
 
+      {/* Advanced controls: duration, language, quality */}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        {/* Duration slider */}
+        <div className="rounded-xl border border-white/10 bg-black/20 p-3.5">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80">
+              <Clock className="size-3" aria-hidden /> Duration
+            </span>
+            <span className="text-xs font-medium tabular-nums text-fuchsia-200">
+              {Math.floor(duration / 60)}:{(duration % 60).toString().padStart(2, "0")}
+            </span>
+          </div>
+          <Slider
+            value={[duration]}
+            onValueChange={(v) => setDuration(v[0] ?? 30)}
+            min={10}
+            max={180}
+            step={5}
+            disabled={loading}
+            aria-label="Track duration in seconds"
+            className="[&_[data-slot=slider-range]]:bg-gradient-to-r [&_[data-slot=slider-range]]:from-fuchsia-500 [&_[data-slot=slider-range]]:to-rose-400 [&_[data-slot=slider-thumb]]:border-fuchsia-400 [&_[data-slot=slider-thumb]]:bg-white"
+          />
+          <div className="mt-1 flex justify-between text-[10px] text-muted-foreground/60">
+            <span>10s</span>
+            <span>3:00</span>
+          </div>
+        </div>
+
+        {/* Language selector */}
+        <div className="rounded-xl border border-white/10 bg-black/20 p-3.5">
+          <span className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/80">
+            <Languages className="size-3" aria-hidden /> Vocal Language
+          </span>
+          <Select value={language} onValueChange={setLanguage} disabled={loading}>
+            <SelectTrigger
+              aria-label="Vocal language"
+              className="w-full border-white/10 bg-black/30 text-sm focus-visible:border-fuchsia-400/40"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="border-white/10 bg-[#15151c]">
+              {LANGUAGES.map((l) => (
+                <SelectItem key={l.code} value={l.code} className="text-sm focus:bg-fuchsia-500/15">
+                  {l.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* High-quality toggle */}
+      <div className="mt-3 flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3.5">
+        <div className="flex items-start gap-2.5">
+          <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-fuchsia-500/15 ring-1 ring-fuchsia-400/20">
+            <Gauge className="size-3.5 text-fuchsia-200" aria-hidden />
+          </span>
+          <div>
+            <p className="text-xs font-medium text-foreground/90">High-Quality Mode</p>
+            <p className="text-[11px] text-muted-foreground/70">
+              Uses 5Hz LM planning for richer arrangements — slower.
+            </p>
+          </div>
+        </div>
+        <Switch
+          checked={highQuality}
+          onCheckedChange={setHighQuality}
+          disabled={loading}
+          aria-label="Toggle high-quality generation"
+        />
+      </div>
+
       {/* Action row */}
       <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
@@ -216,9 +302,13 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
         </button>
       </div>
 
-      <p className="mt-3 text-center text-[11px] text-muted-foreground/70 sm:text-left">
-        Tip: press <kbd className="rounded bg-white/10 px-1 py-0.5 text-[10px]">⌘/Ctrl</kbd>
-        + <kbd className="rounded bg-white/10 px-1 py-0.5 text-[10px]">Enter</kbd> to generate.
+      <p className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center text-[11px] text-muted-foreground/70 sm:justify-start">
+        <span>
+          Tip: press <kbd className="rounded bg-white/10 px-1 py-0.5 text-[10px]">⌘/Ctrl</kbd>
+          + <kbd className="rounded bg-white/10 px-1 py-0.5 text-[10px]">Enter</kbd> to generate.
+        </span>
+        <span aria-hidden className="text-muted-foreground/40">·</span>
+        <span className="tabular-nums">~{estimatedSeconds}s estimated</span>
       </p>
     </motion.section>
   );

@@ -196,3 +196,38 @@ Work Log:
 Stage Summary:
 - ALL core Suno functionality verified end-to-end in the browser: prompt input, genre/mood/style selection, generate w/ loading animation, real-time audio preview (plays), download, lyrics, history, responsive layout, sticky footer.
 - App is production-ready and interactive. Task complete.
+
+---
+Task ID: 6 (Ace Music integration round)
+Agent: orchestrator
+Task: Connect the real Ace Music model (api.acemusic.ai, ACE-Step v1.5 turbo), improve the UI, verify all functions.
+
+Work Log:
+- Probed api.acemusic.ai: root/docs return 404 (Flask). /v1/models works with the provided Bearer key → model "acemusic/acestep-v1.5-turbo".
+- Web-searched for the contract. Found official docs: github.com/ace-step/ACE-Step-1.5 + ace-step-skills SKILL.md. The cloud API is OpenAI-compatible: POST /v1/chat/completions, synchronous, returns base64 MP3 in choices[0].message.audio[].audio_url.url.
+- Ran a real test generation: 17.5s for a 20s track, returned a valid 321KB MP3 (ID3v2.4, 128kbps, 48kHz, Stereo).
+- Added ACE_API_BASE / ACE_API_KEY / ACE_MODEL / ACE_REQUEST_TIMEOUT_MS to .env (server-only).
+- Created src/lib/ai/ace-client.ts: generateMusic() (builds <prompt>/<lyrics> message, audio_config, retries on 429/5xx/network, decodes base64 data URL → Buffer) + checkAceHealth().
+- Rewrote src/lib/ai/audio-synth.ts to delegate to ace-client (preserves the swappable-adapter signature; legacy chunk utils retained for import compat). format now always 'mp3'.
+- Updated src/lib/types.ts: GenerateRequest gains duration/language/highQuality; added LANGUAGES + STYLE_TO_CAPTION; deprecated STYLE_TO_VOICE.
+- Updated src/app/api/generate/route.ts: builds a caption from prompt+genre+mood+style, passes duration/language/highQuality to the synth, persists audioFormat + durationMs.
+- Added src/app/api/health/ace/route.ts (GET) for the UI status pill.
+- UI improvements: prompt-composer now has a Duration slider (10–180s), Vocal Language <Select>, and a High-Quality <Switch> + an estimated-time hint. generation-loader stages reworded for real text-to-music. site-header gains a live AceStatusIndicator (polls /api/health/ace, green/amber/red dot) + real acemusic.ai + ACE-Step GitHub links. site-footer now says "Powered by the open-source ACE-Step v1.5 model · real text-to-music synthesis." Hero copy updated.
+- Cleared old TTS-based songs from the DB (they were WAV-mislabeled).
+- `bun run lint` → clean.
+
+Agent Browser verification (real model):
+- Header status pill: "Ace Music online" (GET /api/health/ace 200).
+- Generated "Neon Dreams" (Electronic/Happy/Female Vocal, 30s, standard quality): POST /api/generate 200 in 21.7s; GET /api/audio/{id} 200 in 234ms.
+- Player: Play→Pause toggled (audio played), no console errors.
+- Download link: "Download Neon Dreams as MP3" → /api/audio/{id}. curl-verified the served file: HTTP 200, 480813 bytes, content-type audio/mpeg, "MPEG ADTS, layer III, v1, 128 kbps, 48 kHz, Stereo" — real music.
+- Lyrics panel: full [Intro]/[Verse 1]/[Verse 2]/[Chorus]/[Bridge]/[Chorus]/[Outro] structure, themed to "chasing dreams under city lights".
+- Library: track listed with Play + Delete (AlertDialog confirm).
+- Mobile (390x844): composer → player → library stack correctly. Sticky footer: root has min-h-screen+flex-col, footer has mt-auto (confirmed via DOM eval).
+- Recorded demo-ace.webm (881K).
+
+Stage Summary:
+- The platform now runs on the REAL Ace Music (ACE-Step v1.5 turbo) cloud API. Audio is genuine sung music (MP3), not TTS.
+- API key is server-only (env), never exposed to the client.
+- All Suno core functions verified end-to-end: prompt → lyrics → music → play → download → history → delete, responsive + sticky footer.
+- Adapter is still swappable: to point at a self-hosted ACE-Step server later, only src/lib/ai/ace-client.ts needs to change.

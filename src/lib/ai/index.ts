@@ -6,16 +6,32 @@
  *
  *     import { generateLyrics, synthesizeAudio } from "@/lib/ai";
  *
- * SERVER-ONLY. Every module behind this barrel touches the `z-ai-web-dev-sdk`
+ * The audio-synth adapter is now backed by the real Ace Music model
+ * (see ./ace-client.ts). The ZAI SDK singleton is retained because the
+ * lyricist still uses the ZAI chat-completions endpoint.
+ *
+ * SERVER-ONLY. Every module behind this barrel touches external AI services
  * and must never be pulled into a client bundle.
  */
 
 export { generateLyrics, LYRICS_BUDGET_CHARS } from "./lyrics-generator";
 export type { LyricsResult, LyricsParams } from "./lyrics-generator";
 
-export { synthesizeAudio, splitTextIntoChunks, TTS_LIMIT, CHUNK_MAX } from "./audio-synth";
+export {
+  synthesizeAudio,
+  splitTextIntoChunks,
+  TTS_LIMIT,
+  CHUNK_MAX,
+} from "./audio-synth";
 export type { SynthResult, SynthParams } from "./audio-synth";
 
-// Expose the singleton accessor so other server modules (e.g. future admin or
-// diagnostic routes) can reuse the cached ZAI client without duplicating it.
+export {
+  generateMusic,
+  checkAceHealth,
+  ACE_CONFIG,
+} from "./ace-client";
+export type { AceGenerationParams, AceGenerationResult } from "./ace-client";
+
+// Expose the ZAI singleton accessor so the lyricist (and any future server
+// module) can reuse the cached ZAI client without duplicating it.
 export { getZAI } from "./zai-instance";

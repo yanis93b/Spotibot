@@ -3,12 +3,14 @@
  *
  * POST /api/generate
  *
- * Generates a new AI song:
- *   1. Validates the JSON body (prompt length, genre/mood/style enums).
- *   2. Derives the TTS voice from the style (or accepts an explicit override).
- *   3. Calls the LLM lyrics adapter (`generateLyrics`).
- *   4. Calls the TTS "Ace Music" audio adapter (`synthesizeAudio`) — this step
- *      depends on the lyrics text so it runs strictly AFTER step 3.
+ * Generates a new AI song using the REAL Ace Music model (ACE-Step v1.5 turbo):
+ *   1. Validates the JSON body (prompt length, genre/mood/style enums, duration,
+ *      language, highQuality flag).
+ *   2. Builds a musical caption from the prompt + genre + mood + style.
+ *   3. Calls the LLM lyricist (`generateLyrics`) to write structured lyrics.
+ *   4. Calls the Ace Music adapter (`synthesizeAudio`) which performs full
+ *      text-to-music synthesis (music + vocals + instrumentation) and returns
+ *      an MP3 buffer. This step depends on the lyrics, so it runs AFTER step 3.
  *   5. Persists the song (audio bytes inline) to SQLite via Prisma.
  *   6. Returns the public `Song` object (audioUrl included, no audio bytes).
  *
@@ -18,11 +20,10 @@
  *   429 — { error: "Too many requests. Please slow down." }
  *   500 — { error: "Failed to generate song. Please try again." }
  *
- * Concurrency note: Next.js App Router route handlers run concurrently per
- * request, so multiple generations are handled in parallel by the Node runtime
- * — no global queue or mutex is required here. Within a single request the
- * lyrics step must complete before audio synthesis (the synth consumes the
- * lyrics), so those two steps are necessarily sequential.
+ * Concurrency: Next.js App Router route handlers run concurrently per request,
+ * so multiple generations are handled in parallel by the Node runtime — no
+ * global queue required. Within a single request, lyrics → audio is sequential
+ * (the Ace Music model consumes the lyrics).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -32,19 +33,20 @@ import {
   GENRES,
   MOODS,
   STYLES,
-  STYLE_TO_VOICE,
+  LANGUAGES,
+  STYLE_TO_CAPTION,
 } from "@/lib/types";
 import { generateLyrics, synthesizeAudio } from "@/lib/ai";
 import { toPublicSong } from "@/lib/song-mapper";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter (per-IP, sliding window).
-// NOTE: This is intentionally lightweight and in-process — fine for a
-// single-instance demo. In production this belongs in middleware backed by
-// Redis/Upstash so the limit is shared across instances and survives restarts.
+// NOTE: intentionally lightweight and in-process — fine for a single-instance
+// deployment. In production this belongs in middleware backed by Redis/Upstash
+// so the limit is shared across instances and survives restarts.
 // ---------------------------------------------------------------------------
 const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 10; // 10 generations / minute / IP
+const RATE_LIMIT_MAX = 8; // 8 generations / minute / IP (Ace Music calls are heavier now)
 const rateBuckets = new Map<string, number[]>();
 
 /** Returns true when the caller has exceeded the rate limit. */
@@ -74,6 +76,8 @@ function getClientIp(req: NextRequest): string {
 // ---------------------------------------------------------------------------
 // Request schema
 // ---------------------------------------------------------------------------
+const LANGUAGE_CODES = LANGUAGES.map((l) => l.code);
+
 const generateSchema = z.object({
   prompt: z
     .string()
@@ -84,7 +88,38 @@ const generateSchema = z.object({
   mood: z.enum(MOODS),
   style: z.enum(STYLES),
   voice: z.string().trim().optional(),
+  duration: z
+    .number()
+    .int("Duration must be a whole number")
+    .min(10, "Duration must be at least 10 seconds")
+    .max(300, "Duration must be at most 300 seconds")
+    .optional(),
+  language: z.enum(LANGUAGE_CODES as [string, ...string[]]).optional(),
+  highQuality: z.boolean().optional(),
 });
+
+/**
+ * Compose the musical caption that the Ace Music model consumes. The caption
+ * conveys genre + mood + style + the user's concept in a single descriptive
+ * sentence — this is what drives the instrumental and vocal arrangement.
+ */
+function buildCaption(params: {
+  prompt: string;
+  genre: string;
+  mood: string;
+  style: string;
+}): string {
+  const styleHint = STYLE_TO_CAPTION[params.style] ?? "";
+  const parts = [
+    params.prompt,
+    params.genre,
+    params.mood.toLowerCase(),
+    styleHint,
+  ].filter(Boolean);
+  // Join into a readable caption. The model treats this as free-text style
+  // guidance, so a comma-separated phrase works well.
+  return parts.join(", ");
+}
 
 export async function POST(req: NextRequest) {
   // 1. Rate limit (cheapest gate, do it before any expensive work).
@@ -115,16 +150,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  const { prompt, genre, mood, style } = parsed.data;
-  // Derive voice: explicit non-empty override wins, else map from style,
-  // else fall back to the platform default voice.
-  const voice =
-    parsed.data.voice && parsed.data.voice.length > 0
-      ? parsed.data.voice
-      : (STYLE_TO_VOICE[style] ?? "tongtong");
+  const {
+    prompt,
+    genre,
+    mood,
+    style,
+    duration = 30,
+    language = "en",
+    highQuality = false,
+  } = parsed.data;
+
+  // Compose the musical caption for the Ace Music model.
+  const caption = buildCaption({ prompt, genre, mood, style });
 
   try {
-    // 4. Generate lyrics via the LLM adapter.
+    // 4. Generate lyrics via the LLM lyricist.
     const { title, lyrics } = await generateLyrics({
       prompt,
       genre,
@@ -132,11 +172,16 @@ export async function POST(req: NextRequest) {
       style,
     });
 
-    // 5. Synthesize audio via the TTS "Ace Music" adapter.
-    //    This depends on `lyrics`, so it must run after step 4.
-    //    `format` is driven by the adapter (currently 'wav' because the live
-    //    TTS server rejects 'mp3' — see src/lib/ai/audio-synth.ts header).
-    const { buffer, format } = await synthesizeAudio({ text: lyrics, voice });
+    // 5. Synthesize the full track via the Ace Music model.
+    //    The model performs text→music (vocals + instrumentation) from the
+    //    caption + lyrics in a single synchronous request and returns an MP3.
+    const { buffer, format } = await synthesizeAudio({
+      prompt: caption,
+      text: lyrics,
+      duration,
+      language,
+      thinking: highQuality,
+    });
 
     // Prisma's `Bytes` scalar is typed as `Uint8Array<ArrayBuffer>`, while the
     // synth adapter returns a Node `Buffer` (which extends `Uint8Array` and is
@@ -144,6 +189,10 @@ export async function POST(req: NextRequest) {
     // happily accepts a Buffer, so this assertion is a purely type-level
     // adjustment (no data is copied or converted).
     const audioBytes = buffer as Uint8Array<ArrayBuffer>;
+
+    // Duration in milliseconds for the UI (server-side best-effort estimate
+    // from the requested duration; the model aims for the requested length).
+    const durationMs = Math.round(duration * 1000);
 
     // 6. Persist the song (audio bytes stored inline in SQLite).
     const row = await db.song.create({
@@ -154,12 +203,14 @@ export async function POST(req: NextRequest) {
         genre,
         mood,
         style,
-        voice,
+        // Store the requested language as the "voice" field (back-compat with
+        // the Song schema). The Ace Music adapter no longer uses TTS voice ids.
+        voice: language,
         audioData: audioBytes,
         // Persist the format actually produced by the synth adapter so the
         // streaming route can set the correct Content-Type / file extension.
         audioFormat: format,
-        durationMs: 0,
+        durationMs,
       },
     });
 
@@ -168,8 +219,13 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // Log server-side for debugging; never leak internals to the client.
     console.error("generate: failed to generate song", err);
+    const msg = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
-      { error: "Failed to generate song. Please try again." },
+      {
+        error: msg.includes("Ace Music")
+          ? msg
+          : "Failed to generate song. Please try again.",
+      },
       { status: 500 },
     );
   }

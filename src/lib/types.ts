@@ -26,6 +26,12 @@ export interface GenerateRequest {
   mood: string;
   style: string;
   voice?: string;
+  /** Track duration in seconds (10–600). Optional; server default applies. */
+  duration?: number;
+  /** Vocal language code: "en" | "zh" | "ja" | ... Optional, default "en". */
+  language?: string;
+  /** Enable higher-quality (slower) 5Hz LM planning. Optional, default false. */
+  highQuality?: boolean;
 }
 
 export interface ApiError {
@@ -65,13 +71,44 @@ export const STYLES = [
   "Spoken Word",
 ] as const;
 
-/** Maps a UI style to a concrete TTS voice id used by the synth adapter. */
+/**
+ * Maps a UI style label to a caption fragment that the Ace Music model
+ * understands. (The TTS voice-id mapping is no longer used — the model derives
+ * the vocal timbre from the caption — but we keep a style→caption-hint map so
+ * the selected style still influences the generation.)
+ */
+export const STYLE_TO_CAPTION: Record<string, string> = {
+  "Male Vocal": "male lead vocal",
+  "Female Vocal": "female lead vocal",
+  "Instrumental Focus": "instrumental, no vocals",
+  Choir: "choir vocals",
+  "Spoken Word": "spoken-word vocal",
+};
+
+/** Supported vocal languages for the Ace Music model. */
+export const LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "zh", label: "中文" },
+  { code: "ja", label: "日本語" },
+  { code: "ko", label: "한국어" },
+  { code: "es", label: "Español" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "pt", label: "Português" },
+  { code: "ru", label: "Русский" },
+  { code: "it", label: "Italiano" },
+] as const;
+
+/**
+ * @deprecated Kept for backwards compatibility. The Ace Music adapter no longer
+ * uses TTS voice ids; prefer `STYLE_TO_CAPTION`. New code should not import this.
+ */
 export const STYLE_TO_VOICE: Record<string, string> = {
-  "Male Vocal": "xiaochen",
-  "Female Vocal": "tongtong",
-  "Instrumental Focus": "kazi",
-  Choir: "luodo",
-  "Spoken Word": "jam",
+  "Male Vocal": "en",
+  "Female Vocal": "en",
+  "Instrumental Focus": "en",
+  Choir: "en",
+  "Spoken Word": "en",
 };
 
 export type Genre = (typeof GENRES)[number];

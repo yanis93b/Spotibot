@@ -2,6 +2,7 @@
 
 import { Music2, Github, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AceStatusIndicator } from "./ace-status-indicator";
 
 export interface SiteHeaderProps {
   className?: string;
@@ -44,20 +45,25 @@ export function SiteHeader({ className }: SiteHeaderProps) {
         </a>
 
         <div className="flex items-center gap-2 sm:gap-3">
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border border-fuchsia-400/25 bg-fuchsia-500/10 px-3 py-1 text-[11px] font-medium text-fuchsia-200"
-            title="Powered by the Ace Music model"
-          >
-            <Sparkles className="size-3" aria-hidden />
-            <span className="hidden sm:inline">Ace Music Model</span>
-            <span className="sm:hidden">Ace</span>
-          </span>
+          <AceStatusIndicator />
 
           <a
-            href="https://github.com"
+            href="https://acemusic.ai"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="View project source on GitHub (opens in a new tab)"
+            className="inline-flex items-center gap-1.5 rounded-full border border-fuchsia-400/25 bg-fuchsia-500/10 px-3 py-1 text-[11px] font-medium text-fuchsia-200 transition-colors hover:bg-fuchsia-500/20"
+            title="Visit acemusic.ai — the world’s first open-source Music AI platform"
+          >
+            <Sparkles className="size-3" aria-hidden />
+            <span className="hidden sm:inline">Ace Music</span>
+            <span className="sm:hidden">Ace</span>
+          </a>
+
+          <a
+            href="https://github.com/ace-step/ACE-Step-1.5"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View ACE-Step source on GitHub (opens in a new tab)"
             className="grid size-9 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
           >
             <Github className="size-5" aria-hidden />
