@@ -71,7 +71,7 @@ auth-scoped GET/POST API and the Prisma schema documentation.
 - **Dark glassmorphism + fuchsia/rose accent palette** to match the existing
   `top-bar` / `theme-toggle` / `share-dialog` / `profile-view` aesthetic. No
   indigo/blue. Custom scrollbar styling for the dropdown list
-  (`[&::-webkit-scrollbar]:w-1.5 ...`) per the project UI rules.
+  (``) per the project UI rules.
 
 ## API contract
 

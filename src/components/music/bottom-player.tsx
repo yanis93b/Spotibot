@@ -7,6 +7,7 @@ import {
   Heart,
   Pause,
   Play,
+  Share2,
   SkipBack,
   SkipForward,
   Volume2,
@@ -14,14 +15,15 @@ import {
   VolumeX,
   Repeat2,
   Shuffle,
-  ListMusic,
   Maximize2,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { usePlayerStore } from "@/lib/player-store";
+import { useQueueStore } from "@/lib/queue-store";
 import type { Song } from "@/lib/types";
 import { CoverImage } from "./cover-image";
+import { QueueButton } from "./queue-button";
 
 /** Format seconds as m:ss. */
 function fmt(s: number): string {
@@ -36,6 +38,10 @@ export interface BottomPlayerProps {
   onNext?: () => void;
   /** Play the previous track. */
   onPrev?: () => void;
+  /** Toggle the queue panel (mounted by the parent). */
+  onQueueToggle?: () => void;
+  /** Open the share dialog for the current track. */
+  onShare?: () => void;
 }
 
 /**
@@ -47,7 +53,13 @@ export interface BottomPlayerProps {
  * Owns the single shared `<audio>` element and wires its events to the global
  * player store so every play control in the app drives this one instance.
  */
-export function BottomPlayer({ onToggleLike, onNext, onPrev }: BottomPlayerProps) {
+export function BottomPlayer({
+  onToggleLike,
+  onNext,
+  onPrev,
+  onQueueToggle,
+  onShare,
+}: BottomPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const registerAudio = usePlayerStore((s) => s.registerAudio);
   const current = usePlayerStore((s) => s.current);
@@ -56,6 +68,12 @@ export function BottomPlayer({ onToggleLike, onNext, onPrev }: BottomPlayerProps
   const duration = usePlayerStore((s) => s.duration);
   const volume = usePlayerStore((s) => s.volume);
   const muted = usePlayerStore((s) => s.muted);
+
+  // Queue length from the global queue store drives the badge count, and a
+  // local `queueOpen` mirror tracks whether the panel (owned by the parent)
+  // is currently open so the QueueButton can light up while active.
+  const queueLength = useQueueStore((s) => s.queue.length);
+  const [queueOpen, setQueueOpen] = useState(false);
 
   const togglePlay = usePlayerStore((s) => s.togglePlay);
   const onTimeUpdate = usePlayerStore((s) => s.onTimeUpdate);
@@ -207,7 +225,7 @@ export function BottomPlayer({ onToggleLike, onNext, onPrev }: BottomPlayerProps
                 </div>
               </div>
 
-              {/* ── RIGHT: queue, volume, download, fullscreen ───────────── */}
+              {/* ── RIGHT: queue, volume, download, share, fullscreen ────── */}
               <div className="hidden items-center justify-end gap-1 sm:flex sm:basis-[30%]">
                 <a
                   href={current.audioUrl}
@@ -220,11 +238,22 @@ export function BottomPlayer({ onToggleLike, onNext, onPrev }: BottomPlayerProps
                 </a>
                 <button
                   type="button"
-                  aria-label="Queue"
-                  className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                  onClick={onShare}
+                  aria-label="Share"
+                  disabled={!onShare}
+                  title="Share"
+                  className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:text-fuchsia-200 disabled:opacity-30 disabled:hover:text-muted-foreground"
                 >
-                  <ListMusic className="size-4" aria-hidden />
+                  <Share2 className="size-4" aria-hidden />
                 </button>
+                <QueueButton
+                  count={queueLength}
+                  active={queueOpen}
+                  onToggle={() => {
+                    setQueueOpen((v) => !v);
+                    onQueueToggle?.();
+                  }}
+                />
                 <button
                   type="button"
                   onClick={toggleMute}

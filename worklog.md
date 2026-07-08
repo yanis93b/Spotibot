@@ -760,7 +760,7 @@ Work Log:
   - **Red unread badge**: absolute top-right of the bell button. Gradient `from-rose-500 to-red-600`, white bold text, `ring-2 ring-black/80` for contrast against the bell background, `shadow-md shadow-rose-500/40`. Shows `99+` when count exceeds 99. Hidden when count is 0. `aria-hidden` (the bell's label already conveys the count to screen readers).
   - **Dropdown panel**: `absolute right-0 top-full mt-2`, `w-[min(22rem,calc(100vw-2rem))]` (mobile-safe — never overflows the viewport). Dark glassmorphism (`bg-black/80 backdrop-blur-xl backdrop-saturate-150`), `rounded-2xl`, `border border-white/[0.08]`, `shadow-2xl shadow-black/60`, subtle `animate-in fade-in-0 zoom-in-95` entrance.
   - **Header**: "Notifications" title + "Mark all as read" button (disabled when `marking` or `unreadCount === 0`; shows a `Loader2` spinner during the request).
-  - **List body**: `max-h-96 overflow-y-auto` with custom thin scrollbar styling (`[&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/15`). Each row: type-icon chip (9×9 rounded-full, per-type gradient + ring) + title + (optional) 2-line-clamped body + relative timestamp via `date-fns formatDistanceToNow` ("3 minutes ago"). Unread rows get a subtle `bg-white/[0.025]` tint + a 2px-wide fuchsia→rose gradient accent bar on the left edge.
+  - **List body**: `max-h-96 overflow-y-auto` with custom thin scrollbar styling (``). Each row: type-icon chip (9×9 rounded-full, per-type gradient + ring) + title + (optional) 2-line-clamped body + relative timestamp via `date-fns formatDistanceToNow` ("3 minutes ago"). Unread rows get a subtle `bg-white/[0.025]` tint + a 2px-wide fuchsia→rose gradient accent bar on the left edge.
   - **Icon mapping by type**: `follow → UserPlus`, `like → Heart`, `generation → Sparkles`, `system → Info`, default → `Bell`. Unknown types render with the default icon + neutral accent — non-breaking.
   - **Accent mapping by type**: `follow → fuchsia`, `like → rose`, `generation → purple`, `system → emerald`, default → `white/neutral`. No indigo/blue anywhere.
   - **Empty state**: "No notifications" + sub-text explaining what shows up here (new followers, likes, generation updates).
@@ -862,3 +862,533 @@ Stage Summary:
 - Integration TODOs for the orchestrator (documented in detail in /agent-ctx/4-C-settings.md):
   1. Mount `<SettingsView />` in page.tsx when `view === "settings"` and add a sidebar nav entry (the `Settings` icon is already in lucide-react).
   2. Merge `prisma/schema-discover.md` + extend PATCH /api/songs/[id] to accept `{ isPublic?: boolean }` + update `toPublicSong` + `Song` in types.ts so the Switch reads the real value.
+
+---
+Task ID: A-1
+Agent: cleanup-dead-components
+Task: Delete 8 obsolete music components that were superseded by newer alternatives across earlier iterations (site-header, site-footer, song-player, song-history, song-card, song-feed, song-detail, empty-state), and fix any imports that broke as a result.
+
+Work Log:
+- Read worklog.md (865 lines) + listed src/components/music (36 files) to orient on the project's component inventory.
+- Pre-deletion import audit. Ran two complementary greps across the whole project (excluding node_modules):
+  - A substring search for each of the 8 module names.
+  - A stricter `from "...<module>"` import-path search.
+  Result: only TWO import statements reference any of the 8 files, and BOTH are intra-dead-set (i.e. one to-be-deleted file importing another):
+    * `src/components/music/song-player.tsx:20` → `import { EmptyState } from "./empty-state";`
+    * `src/components/music/song-feed.tsx:8`   → `import { SongCard } from "./song-card";`
+  No active code (page.tsx, layout, other music components, API routes, mini-services) imports any of the 8 files. The earlier loose-name hits in `profile-view.tsx` were false positives — the strings "empty-state" / "song-player" there are inside a JSDoc comment ("Compact empty-state hint…") and the local function name `EmptyHint`, not actual imports.
+- Deleted all 8 files with `rm -v` (confirmed each removal in shell output):
+    src/components/music/site-header.tsx
+    src/components/music/site-footer.tsx
+    src/components/music/song-player.tsx
+    src/components/music/song-history.tsx
+    src/components/music/song-card.tsx
+    src/components/music/song-feed.tsx
+    src/components/music/song-detail.tsx
+    src/components/music/empty-state.tsx
+- Ran `cd /home/z/my-project && bun run lint` → EXIT 0, 0 errors / 0 warnings project-wide. No broken-import errors surfaced, confirming the audit was correct and no live code depended on the deleted files.
+- Inspected the tail of dev.log → Next.js dev server recompiled cleanly ("✓ Compiled in 260ms" / "✓ Compiled in 238ms") after the deletions; no ModuleNotFound / compile errors attributable to the removed files. Only routine Prisma query logs + 200 responses on /api/browse, /api/stats, /api/songs, /api/profile/me, /api/health/ace.
+- Did NOT modify page.tsx (orchestrator-owned per instructions). Did NOT touch any other component, route, schema, or config. Did NOT start/stop the dev server.
+
+Stage Summary:
+- Files deleted (8, all obsolete):
+  - site-header.tsx     → superseded by top-bar.tsx + app-sidebar.tsx
+  - site-footer.tsx     → no longer used
+  - song-player.tsx     → superseded by bottom-player.tsx
+  - song-history.tsx    → superseded by track-list.tsx
+  - song-card.tsx       → superseded by track-list.tsx + cover-image.tsx
+  - song-feed.tsx       → superseded by track-list.tsx + browse-view.tsx
+  - song-detail.tsx     → superseded by now-playing-panel.tsx
+  - empty-state.tsx     → superseded by inline empty states (e.g. EmptyHint in profile-view.tsx)
+- No imports had to be fixed: the only two cross-references among the 8 were intra-dead-set (song-player→empty-state, song-feed→song-card) and disappeared with the deletions.
+- No file was left in place because it was still imported — every one of the 8 was genuinely dead.
+- Verification: `bun run lint` clean (0 errors/warnings); dev server compiles cleanly post-deletion.
+- Wrote /agent-ctx/A-1-cleanup.md work record (next to the existing per-task records in /home/z/my-project/agent-ctx/).
+
+---
+
+## Task B-3 — Wire QueueButton + Share button into BottomPlayer
+
+**Agent**: B-3
+**File owned & modified**: `src/components/music/bottom-player.tsx`
+
+### What was broken
+- The bottom player's right section had a **non-functional** `ListMusic` queue button (no `onClick`, no badge, no link to the actual `QueueButton` component or `QueuePanel`).
+- `ShareDialog` existed in the project but had **no trigger button** anywhere on the player.
+
+### Changes made
+1. **New imports**
+   - Added `Share2` to the `lucide-react` import block.
+   - Removed `ListMusic` (no longer used — replaced by the dedicated `QueueButton` component).
+   - Added `import { useQueueStore } from "@/lib/queue-store";`
+   - Added `import { QueueButton } from "./queue-button";`
+   - `useState` was already imported from `react` — reused it for the local `queueOpen` mirror.
+
+2. **Extended `BottomPlayerProps`** with two optional callbacks the parent (page.tsx) will pass:
+   ```ts
+   /** Toggle the queue panel (mounted by the parent). */
+   onQueueToggle?: () => void;
+   /** Open the share dialog for the current track. */
+   onShare?: () => void;
+   ```
+   Both optional so existing call sites keep compiling without changes.
+
+3. **Component body**
+   - Destructured `onQueueToggle` and `onShare` from props.
+   - Added `const queueLength = useQueueStore((s) => s.queue.length);` — drives the badge count on `QueueButton` (per task spec: read `queue.length`).
+   - Added `const [queueOpen, setQueueOpen] = useState(false);` — local mirror of the panel's open state so `QueueButton` can light up fuchsia while active.
+
+4. **Right section — Share button (NEW)**
+   Placed immediately after the existing Download anchor, before the queue button:
+   ```tsx
+   <button type="button" onClick={onShare} aria-label="Share"
+     disabled={!onShare} title="Share"
+     className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:text-fuchsia-200 disabled:opacity-30 disabled:hover:text-muted-foreground">
+     <Share2 className="size-4" aria-hidden />
+   </button>
+   ```
+   - Disabled when no `onShare` handler is supplied (graceful no-op for parents that haven't wired it up yet).
+   - Same fuchsia hover treatment as the Download button for visual consistency.
+
+5. **Right section — Queue button (REPLACED)**
+   Removed the dead inline `<button><ListMusic/></button>` and replaced it with:
+   ```tsx
+   <QueueButton
+     count={queueLength}
+     active={queueOpen}
+     onToggle={() => {
+       setQueueOpen((v) => !v);
+       onQueueToggle?.();
+     }}
+   />
+   ```
+   - `count` → live `queue.length` from the queue store, reactive.
+   - `active` → local `queueOpen` state mirror.
+   - `onToggle` → flips the local mirror **and** forwards to the parent's `onQueueToggle?.()` so the actual `QueuePanel` (mounted in page.tsx) opens/closes.
+   - Updated the section comment from "queue, volume, download, fullscreen" to "queue, volume, download, share, fullscreen" to reflect the new layout.
+
+### Verification
+- `bun run lint` → clean, no errors or warnings.
+- Dev server log (`dev.log`) shows continued normal compilation; no new errors introduced by this file.
+
+### Contracts for the parent (page.tsx) — not yet wired
+The parent needs to pass these new props to actually activate the features (this is out of scope for B-3, but documented here for whoever owns page.tsx):
+- `onQueueToggle` → toggles the visibility state that mounts `<QueuePanel>`.
+- `onShare` → opens the `<ShareDialog>` (dialog state owned by the parent).
+
+Until those are wired, both buttons render correctly; the share button is disabled (no handler), and the queue button toggles its own local "active" highlight only.
+
+### Out of scope (NOT touched)
+- `QueuePanel` mount point in page.tsx.
+- `ShareDialog` state management in page.tsx.
+- Any other component.
+
+---
+Task ID: A-4
+Agent: now-playing-empty-state
+Task: Redesign the boring "Select a track..." empty state in the right-side Now Playing panel into a polished, intentional SpotiBot-branded empty state with a fuchsia/violet gradient background, the SpotiBot logo (`/spotibot-brand.png`) at 80px with a subtle pulsing glow, "SpotiBot" heading, and the existing subtitle. Verify the playing state (cover, title, tags, lyrics) renders with proper spacing and that the lyrics area scrolls.
+
+Work Log:
+- Read worklog.md (full architecture, file ownership, dark-glass + fuchsia-accent UI conventions in src/components/music/**, the `Song` shared type, the `usePlayerStore` selector pattern, the shadcn + Framer Motion conventions).
+- Read src/components/music/now-playing-panel.tsx in full (NowPlayingPanel — aside xl:flex 340px, two-branch render: empty state + playing state; playing state already renders CoverImage 308px / title+like / AttrChips / download / prompt / scrollable lyrics with `max-h-64 overflow-y-auto`; uses `motion`, `usePlayerStore`, `CoverImage`, lucide `Heart/Download/Music2/Gauge/KeyRound/Clock3/Hash`).
+- Read src/components/music/cover-image.tsx to confirm `<img>` is the established pattern for static/cover images in this codebase (so a plain `<img>` for the brand PNG matches conventions and won't trip ESLint).
+- Verified `/public/spotibot-brand.png` exists (56 KB, present since project init).
+- Redesigned the empty-state branch in src/components/music/now-playing-panel.tsx:
+  - Wrapper `<aside>` now `relative overflow-hidden` with a fuchsia-leaning gradient (`from-[#1c1428] via-[#15101f] to-[#0f0f15]`) and a `border-fuchsia-500/10` so the panel visibly belongs to SpotiBot even when no track is loaded.
+  - Two stacked `pointer-events-none absolute inset-0` radial-gradient overlays: a fuchsia glow anchored at top-center (0.22 alpha, 58% falloff) and a violet glow anchored toward the bottom (0.16 alpha, 55% falloff). Both `aria-hidden` so screen readers ignore the decoration.
+  - Centered content stack (`flex flex-1 flex-col items-center justify-center gap-5 text-center`):
+    - Logo wrapper `relative grid place-items-center` containing:
+      - An inner pulsing fuchsia glow (`bg-fuchsia-500/40 blur-2xl`) animated via `motion.span` with `opacity:[0.4,0.75,0.4]` + `scale:[1,1.12,1]` over 2.8s easeInOut infinite — the "subtle pulsing glow" requested.
+      - A secondary violet halo (`bg-violet-500/25 blur-xl`, inset-[-6px]) on a slightly longer 3.4s loop with a 0.3s delay so the two glows breathe out of phase for a richer aurora effect.
+      - The brand image itself: `<motion.img src="/spotibot-brand.png" width={80} height={80}>` rendered as an 80px (`size-20`) rounded-2xl tile with `object-contain ring-1 ring-white/10`, plus a one-shot `opacity/scale` entrance (0.9 → 1, 0.45s easeOut) so the panel feels alive on mount.
+    - Heading: "SpotiBot" with a fuchsia→pink→violet gradient text fill (`bg-gradient-to-r from-fuchsia-300 via-pink-200 to-violet-300 bg-clip-text text-transparent`), `text-xl font-bold tracking-tight`.
+    - Subtitle: the exact copy "Select a track to see its cover, lyrics, and details here." in `text-sm leading-relaxed text-muted-foreground`, capped at `max-w-[240px]` and centered so it wraps cleanly inside the 340px panel.
+  - Kept the existing "Now Playing" eyebrow label (`relative` so it sits above the absolute glows) so the empty state still reads as the Now Playing panel — it just looks intentional instead of like a placeholder.
+- Verified the playing-state branch is unchanged and renders correctly: CoverImage (308px, full-width), title+like row (`flex items-start justify-between gap-2`, title `truncate text-lg font-bold`, subtitle `genre · mood · style`), AttrChips (`flex flex-wrap gap-2`), download pill, optional prompt block, scrollable lyrics block. Spacing is already `gap-4` on the motion.div parent + `mb-3` on the eyebrow, which reads well.
+- Enhanced the lyrics scrollbar per the UI rules ("implement custom scrollbar styling for better appearance"): the existing `max-h-64 overflow-y-auto` container now also carries Tailwind arbitrary-variant styling — ``, ``, `` — so long lyrics scroll with a thin, theme-matching thumb that brightens on hover. No layout change; purely cosmetic.
+- Confirmed `Music2` is still imported and used (it's referenced by the audioFormat AttrChip in the playing state), so the import list stays accurate.
+- Ran `cd /home/z/my-project && bun run lint` → EXIT 0, 0 errors / 0 warnings project-wide. No new dev.log compile errors attributed to now-playing-panel.tsx.
+
+Stage Summary:
+- Files modified (owned, only this file touched):
+  - src/components/music/now-playing-panel.tsx — empty-state branch fully redesigned (fuchsia/violet gradient + dual radial glows + 80px SpotiBot logo with two-phase pulsing glow + gradient "SpotiBot" heading + subtitle), and the playing-state lyrics container got a custom thin scrollbar for better long-content UX. Playing-state rendering, spacing, CoverImage, AttrChips, download, and prompt sections all verified intact.
+- Empty state now looks intentional and on-brand: the panel is immediately recognizable as SpotiBot even before a track is selected, instead of showing a generic muted music-note placeholder.
+- Pulsing glow uses two staggered Framer Motion loops (fuchsia 2.8s + violet 3.4s w/ 0.3s delay) so the aura breathes rather than strobes; both layers are `aria-hidden` decorative spans.
+- Lyrics scrollability verified: `max-h-64 overflow-y-auto` retained, custom webkit-scrollbar styling added; long lyrics still scroll within the panel without expanding the layout.
+- Lint: `bun run lint` passes clean for the whole project. No TypeScript changes needed (no type/signature edits).
+- Wrote /agent-ctx/A-4-now-playing-empty-state.md work record.
+
+---
+Task ID: A-2
+Agent: A-2 (sidebar-discover-feed-profile)
+Task: SpotiBot sidebar polish — add Discover + Feed nav items, fix Create Playlist button padding, and make the user's name a "My Profile" link.
+
+Work Log:
+- Read worklog.md (locked architecture: `SidebarView` union consumed by `src/app/page.tsx` via `const [view, setView] = useState<SidebarView>("create")` + `onViewChange={(v) => { setView(v); setActivePlaylistId(null); }}`; `AppSidebar` props contract; dark-glass + fuchsia-accent UI conventions; auth-scoping; `useSession` for the user bar).
+- Read `src/components/music/app-sidebar.tsx` fully (owned file). Confirmed: `SidebarView` type, `AppSidebarProps`, `NavBtn`/`FilterChip`/`LibraryEntry`/`UserBar` internal components, `UserBar` uses `useSession()` + `signOut({ callbackUrl: "/signin" })`.
+- Changes applied to `src/components/music/app-sidebar.tsx` (ONLY file modified):
+  1. Added `Globe` + `Rss` to the `lucide-react` import block.
+  2. Extended `SidebarView` union to include `"discover" | "feed"` (placed between `"browse"` and `"analytics"` for logical grouping; formatted as multi-line union for readability).
+  3. Added `onViewProfile?: () => void` to `AppSidebarProps` (optional so existing callers in `page.tsx` don't break — parent can wire it up to navigate to the profile view/page).
+  4. Destructured `onViewProfile` in `AppSidebar` and forwarded it to `<UserBar onViewProfile={onViewProfile} />`.
+  5. Added two `NavBtn` entries immediately after "Browse": "Discover" (`Globe` icon → `onViewChange("discover")`) and "Feed" (`Rss` icon → `onViewChange("feed")`). Order is now: Home, Browse, Discover, Feed, Analytics, Settings, Search.
+  6. Fixed "Create Playlist" button padding: removed the `mt-2` top margin so the button sits flush with the `LibraryEntry` rows above it (which also use `p-1.5` and no margin). Padding is `p-1.5` matching the `LibraryEntry` component exactly — height now consistent (6px + 48px icon + 6px = 60px, identical to the Liked/playlist entries).
+  7. Made the user's name clickable in `UserBar`: when `onViewProfile` is provided, the name renders as a `<button type="button" onClick={onViewProfile} title="View my profile">` with `hover:text-fuchsia-300 hover:underline` feedback (matches the fuchsia-accent convention). When not provided, falls back to the original `<span>`. The email line and sign-out button are unchanged. Updated the `UserBar` JSDoc to document the new behavior.
+- Ran `bun run lint` — clean (no errors, no warnings).
+
+### Out of scope (NOT touched)
+- `src/app/page.tsx` (parent): does NOT yet pass `onViewProfile` or render discover/feed views — orchestrator/parent-agent follow-up. The prop is optional so the app compiles and runs unchanged until wired up.
+- `src/components/music/mobile-nav.tsx`: separate mobile nav; not in this task's scope (may need discover/feed + profile link in a follow-up).
+- Any backend/API routes.
+
+---
+Task ID: C-3
+Agent: c-3 (lyrics-editor)
+Task: Add a lyrics editor — let users edit the lyrics of an existing track they own. Owns `src/app/api/songs/[id]/lyrics/route.ts` and `src/components/music/lyrics-editor.tsx`.
+
+Work Log:
+- Read worklog.md (architecture, API contract, file ownership, auth scoping pattern from the existing `songs/[id]/route.ts`), `src/lib/session.ts` (`getCurrentUserId`), `src/lib/song-mapper.ts`, `prisma/schema.prisma` (Song model: `lyrics String`, `ownerId`), `src/components/ui/{dialog,textarea,button}.tsx`, and `src/hooks/use-toast.ts` (shadcn `useToast`).
+- Created `src/app/api/songs/[id]/lyrics/route.ts`:
+  - `PATCH` handler, `params: Promise<{ id: string }>` (Next 16).
+  - Auth via `getCurrentUserId`; 401 if null.
+  - Zod body schema `{ lyrics: string }` with `.trim().min(0).max(5000)`; exported `LYRICS_MAX_CHARS = 5000`.
+  - 400 on invalid JSON or validation failure (surfaces zod's first issue message).
+  - Scoped `db.song.update({ where: { id, ownerId: userId }, data: { lyrics } })`.
+  - Catches `Prisma.PrismaClientKnownRequestError` code `P2025` → 404 `{ error: "Song not found" }` (covers both "missing" and "owned by someone else" — uniform 404, no ownership leakage).
+  - 500 fallback logs server-side via `console.error`, returns generic message.
+  - Returns `{ success: true }` on 200.
+- Created `src/components/music/lyrics-editor.tsx` (`"use client"`):
+  - Props exactly per spec: `songId`, `initialLyrics`, `open`, `onOpenChange`, optional `onSaved`.
+  - shadcn `Dialog` + `DialogContent` + `DialogHeader/Footer` + `Textarea` + `Button`.
+  - `useToast` for success ("Lyrics updated") / error ("Could not save lyrics") feedback.
+  - Local `value` state seeded from `initialLyrics` whenever `open` transitions to true (via `useEffect`); discards cancelled edits and picks up external updates.
+  - Char counter overlay (`{value.length} / 5,000`) bottom-right of the textarea, switches to `text-destructive` when over limit.
+  - Save disabled when `unchanged || overLimit || isSaving`; over-limit renders an explicit alert with the overshoot count; empty-trimmed renders a soft hint that saving will clear the lyric sheet.
+  - Save button: spinner (`Loader2` + `animate-spin`) + "Saving…" label while submitting; `aria-busy` set.
+  - ⌘/Ctrl+Enter saves (textarea `onKeyDown`); ESC closes via Radix default.
+  - Network/parse errors caught and surfaced as destructive toast; 401/404 get tailored copy.
+  - Accent palette: fuchsia/violet/rose (no indigo/blue) — only uses semantic shadcn tokens + `destructive` for error states.
+- Ran `bun run lint` → clean (no errors, no warnings). Verified dev.log shows no new errors after file creation.
+
+Stage Summary:
+- Files created (owned, no overlap):
+  - `src/app/api/songs/[id]/lyrics/route.ts` — PATCH endpoint, auth + ownerId scoped, zod 5000-char cap, uniform 404.
+  - `src/components/music/lyrics-editor.tsx` — controlled dialog with char counter, ⌘/Ctrl+Enter, spinner, toasts.
+- API contract: `PATCH /api/songs/[id]/lyrics` `{ lyrics }` → 200 `{ success: true }` / 400 / 401 / 404 / 500.
+- Frontend: shadcn primitives only, fully typed props, accessible (aria-label, aria-live counter, role=alert on overshoot), mobile-friendly (`sm:max-w-2xl`, max-h-[60vh] textarea).
+- The new PATCH endpoint is a sibling of the existing `PATCH /api/songs/[id]` (which only handles `liked`); both coexist under `[id]` without conflict.
+- Did NOT modify any other agent's files (no changes to lyrics-panel, song-detail, song-player, schema, etc.). The editor is self-contained and ready for an owning agent to wire into a "Edit lyrics" trigger button.
+- Wrote `/agent-ctx/C-3-lyrics-editor.md` with the contract + integration notes.
+
+---
+Task ID: C-1
+Agent: synced-lyrics
+Task: Build a karaoke-style synced lyrics component that highlights the current line during playback, plus the timestamp-estimation utility that backs it.
+
+Work Log:
+- Read worklog.md (all prior tasks 0–5) to confirm architecture, the `Song` contract, and the shared `usePlayerStore` (Zustand) API that owns `currentTime` (seconds), `duration` (seconds), and per-song playback state.
+- Inspected `src/components/music/lyrics-panel.tsx` (Agent 1's static lyrics surface) and `src/app/globals.css` (custom fuchsia-on-dark scrollbar + `.music-bg`/`.glass-card`/`.gradient-text` theme utilities) so the new component matches the established visual language.
+- Created `src/lib/lyrics-timestamps.ts`:
+  - `LyricLine` interface: `{ text: string; startTime: number; isSection: boolean }` (startTime in SECONDS per spec).
+  - `estimateLineTimestamps(lyrics, durationMs)`: splits on `\n`; drops blank lines; classifies non-blank lines as `[Section]` headings via `/^\[[^\]]+\]$/` or singable lyric lines; distributes `durationMs/1000` EVENLY across ONLY singable lines; section headings adopt the timestamp of the following singable line (consume no time) so the active-line finder never lands on a heading. Returns `[]` for blank lyrics or zero singable lines.
+  - `findActiveLineIndex(lines, currentTime)`: returns the index of the LAST non-section line whose `startTime <= currentTime`, with early-exit (lines are time-ordered). Returns `-1` when nothing has started yet.
+- Created `src/components/music/synced-lyrics.tsx` (`"use client"`):
+  - Props: `{ lyrics: string; durationMs: number; currentTime?: number; className?: string }`. `currentTime` is optional and defaults to the player store's live value (the spec listed it as a prop "from player store" — making it optional lets the parent omit it and rely on the store, while still allowing a static override for previews/tests).
+  - Subscribes to `usePlayerStore` for `currentTime` and `duration`. Live store values take precedence when a track is loaded (`storeTime > 0`, `storeDuration > 0`); prop values are the fallback. This means karaoke highlighting tracks real playback WITHOUT the parent re-rendering on every `timeupdate` event.
+  - `useMemo` for the timestamped line list (recompute only on lyrics/duration change) and for the active index (recompute on lines/time change).
+  - Auto-scroll: `useEffect` keyed on `activeIndex` scrolls the active `<p>` to the vertical center of the scroll container via `container.scrollTo({ top, behavior: "smooth" })`. Only fires when the active index actually changes (a few times per song), so no scroll jank.
+  - Active line: `text-lg font-bold text-fuchsia-400` + `drop-shadow-[0_0_12px_rgba(217,70,239,0.45)]` glow + `opacity-100`.
+  - Past lines: `opacity-50`. Future lines: `text-foreground/80`, normal opacity.
+  - Section tags: `text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/60` — never highlighted, never returned as active.
+  - Container: `max-h-96 overflow-y-auto rounded-xl border border-white/10 bg-black/30 p-4`, inherits the global custom fuchsia scrollbar from `globals.css`. Adds a top/bottom `mask-image` linear-gradient fade for the karaoke drift-in/out effect.
+  - Empty state: renders "No lyrics available for this track." inside the same scroll-container shell.
+  - Accessibility: `role="region"` + `aria-label="Synced lyrics"` on the container; ref callbacks use block bodies returning `void` (React 19-safe).
+- Ran `bun run lint` — both owned files are CLEAN (0 errors, 0 warnings). Verified with a targeted `bunx eslint` on just my two files. Also ran `bunx tsc --noEmit` — no diagnostics on my files.
+- NOTE: `bun run lint` reports 1 pre-existing error in `src/hooks/use-radio.ts` (`react-hooks/set-state-in-effect`). That file is owned by the 4-A PWA agent, NOT in my file set — I did not touch it.
+- Wrote `/agent-ctx/C-1-synced-lyrics.md` with the public API, integration recipe for the player owner, and styling decisions.
+
+Stage Summary:
+- Files created (owned, no overlap): `src/lib/lyrics-timestamps.ts`, `src/components/music/synced-lyrics.tsx`. Agent-ctx record: `/agent-ctx/C-1-synced-lyrics.md`.
+- The component is a drop-in upgrade for Agent 1's static `<LyricsPanel>` inside `song-player.tsx` — invocation is simply `<SyncedLyrics lyrics={song.lyrics} durationMs={song.durationMs} />` (no `currentTime` prop needed; the store handles live updates).
+- Did NOT modify any other agent's files (player-store, song-player, lyrics-panel, globals.css, types, api routes, ai/).
+- Lint: clean for my files. TypeScript: clean for my files. Dev log: no new errors.
+- Accent palette stays fuchsia/violet/rose (matches existing theme); no indigo/blue introduced. `"use client"` directive present. Custom scrollbar inherited from globals.css. `max-h-96 overflow-y-auto` per spec.
+
+---
+Task ID: C-2
+Agent: radio-autoplay
+Task: Build the Radio / Autoplay feature — `use-radio` hook (watches player store for track-end events and auto-plays a similar same-genre track from the library) and `radio-toggle` button (compact icon toggle with fuchsia + subtle pulse when enabled).
+
+Work Log:
+- Read worklog.md + src/lib/player-store.ts to confirm the player store contract: `onEnded()` is the unique signal that flips `isPlaying` true→false AND resets `currentTime` to 0 while keeping the same `current` song. Neither a manual pause (keeps currentTime) nor loading a different song (changes current.id) match that signature — so the hook can detect a real track-end transition by inspecting the prev→next delta inside a `usePlayerStore.subscribe` callback.
+- Inspected src/components/music/theme-toggle.tsx + queue-button.tsx to mirror the established patterns: `useSyncExternalStore` for the persisted localStorage flag (avoids the `set-state-in-effect` lint error and hydration mismatches — server snapshot returns false to match the first client paint), a custom event for in-tab sync (the native `storage` event only fires across other tabs), fuchsia accent + `size-8 rounded-full` ghost button styling, lucide icon at `size-4`.
+- Created `src/hooks/use-radio.ts`:
+  - `libraryCache` module-level cache for `/api/songs` (populated on first ended event, reused afterward).
+  - `subscribeRadio/getRadioSnapshot/getRadioServerSnapshot/writeRadio` plumbing around `localStorage["spotibot-radio"]`, mirroring the theme-toggle pattern.
+  - `autoplayNext(current)`: fetches the cached library, bails out if the user has manually moved to a different track during the async fetch (never hijacks an explicit action), filters to same-`genre` tracks that aren't the current one, falls back to any other track if no same-genre match exists, picks a random candidate, and calls `usePlayerStore.getState().playSong(next)`.
+  - `useRadio()` returns `{ radioEnabled, toggleRadio }`. Subscribes to the player store ONLY while radio is enabled (no per-render cost when off). Uses prev→next delta detection plus a one-shot `firedForId` guard (re-armed on song change or user re-play) to avoid double-firing on a single ended event.
+- Created `src/components/music/radio-toggle.tsx`:
+  - `"use client"`, uses the `useRadio` hook, shadcn `<Button variant="ghost" size="icon">` overridden to `size-8 rounded-full`.
+  - Disabled state: `text-muted-foreground hover:text-foreground`.
+  - Enabled state: `text-fuchsia-300 hover:bg-fuchsia-500/10 hover:text-fuchsia-200` + a framer-motion opacity pulse `[1, 0.45, 1]` over 2.2s (broadcast-signal vibe).
+  - `aria-label="Toggle autoplay"`, `aria-pressed={radioEnabled}`, `title` reflecting current state, lucide `Radio` icon at `size-4`.
+- Ran `bun run lint` — first pass flagged `react-hooks/set-state-in-effect` on the initial `setRadioEnabled(readStoredEnabled())` hydration pattern; refactored to `useSyncExternalStore` (the same pattern theme-toggle.tsx uses) so the flag is read externally and there's no setState-in-effect. Second pass: `bun run lint` passes clean (0 errors, 0 warnings).
+- Checked dev.log — no errors related to my files; `GET /api/songs 200` confirms the endpoint my hook fetches is healthy; compilation clean.
+
+Stage Summary:
+- Files created (owned, no overlap): `src/hooks/use-radio.ts`, `src/components/music/radio-toggle.tsx`.
+- Hook contract honored: `{ radioEnabled, toggleRadio }` API, persisted to localStorage under `spotibot-radio`, fetches `/api/songs` cached on first call, picks a random same-genre non-current track, calls `usePlayerStore.getState().playSong(nextSong)`.
+- Toggle button contract honored: `"use client"`, lucide `Radio` icon, fuchsia + subtle pulse when enabled, muted when disabled, `aria-label="Toggle autoplay"`, `size-8` compact button, uses `useRadio` hook.
+- Did NOT modify any other agent's files (player-store, page, other components, API, schema). The orchestrator can wire `<RadioToggle/>` into the bottom player bar's right-side cluster (between the Queue button and the volume control, matching the visual hierarchy of existing transport controls).
+- Lint: clean. Dev log: clean.
+
+---
+Task ID: C-4
+Agent: onboarding
+Task: Build a self-contained multi-step onboarding modal (`src/components/music/onboarding.tsx`) that appears for first-time SpotiBot users — Welcome → Set username → Feature tour — detected via `localStorage.getItem("spotibot-onboarded")` being null.
+
+Work Log:
+- Read worklog.md (full architecture, file ownership, auth-scoping convention, the 3-A public-profiles API contract for GET/PATCH /api/profile/me including the username zod regex `^[a-z0-9]+(?:-[a-z0-9]+)*$` with 3–20 char bounds + the P2002 → "Username is already taken" mapping, the dark-glass + fuchsia→violet→rose gradient UI conventions in `src/components/music/**`, the `useSession()` patterns in `app-sidebar.tsx` / `settings-view.tsx`, and the `useToast()` + mounted `<Toaster/>` plumbing in `layout.tsx`).
+- Inspected sibling modal components for styling conventions: `src/components/music/share-dialog.tsx` + `src/components/music/create-playlist-dialog.tsx` (both use `bg-[#1a1a22]` + `border-white/10` + the fuchsia→purple→rose gradient on primary buttons); `src/components/music/settings-view.tsx` (mirrored its `sanitizeUsernameInput` + `USERNAME_REGEX` + `validateUsername` helpers so onboarding + settings can never disagree); `src/components/ui/dialog.tsx` (Radix-based, has built-in X close button via `showCloseButton = true`, requires `DialogTitle` for a11y); `src/components/ui/button.tsx` + `input.tsx` (variant/size APIs); `src/hooks/use-toast.ts` (the `useToast()` hook + `toast({ title, description, variant })` shape); `src/lib/auth.ts` + `src/components/session-provider.tsx` (JWT strategy, `useSession()` exposes `status: "loading" | "authenticated" | "unauthenticated"`).
+- Created `src/components/music/onboarding.tsx` (`"use client"`, no props):
+  - **Self-contained first-time detection**: `mounted` state guards the entire flow against SSR hydration mismatches. A `useEffect` on mount sets `mounted = true` and opens the dialog iff `readOnboarded()` returns false. `open` starts `false` and is only ever set true inside that effect, so the dialog is never open during SSR.
+  - **localStorage helpers** `readOnboarded()` / `writeOnboarded()` wrap every access in try/catch (private-mode / disabled-storage robustness — read failure → treated as "not onboarded yet"; write failure → warn + still close via in-memory state). Key: `"spotibot-onboarded"`, value: `"true"`.
+  - **`handleOpenChange(next)`**: any close (X button / ESC / backdrop) routes through here → calls `complete()` (writes the flag + `setOpen(false)`). So the user is never re-prompted after dismissing, regardless of which affordance they use.
+  - **Step 1 — Welcome**: `/logo.svg` in a rounded square with a fuchsia glow halo, "Welcome to SpotiBot!" headline, the exact spec description ("Generate original songs with AI, create playlists, and discover music from other creators."), gradient "Get started" button → step 2.
+  - **Step 2 — Set username**: shadcn `Input` (font-mono, `autoComplete="off"`, `autoCapitalize="none"`, `spellCheck=false`, `maxLength=20`). `onChange` runs `sanitizeUsernameInput` (lowercase + strip non-`[a-z0-9-]` + collapse `--`) so the displayed value can never violate the server's regex. Live preview `<span class="font-mono text-fuchsia-300">/u/{previewSlug}</span>` (uses the literal `"your-username"` placeholder when empty). `useSession()` gates the input: `loading` → inline spinner; `authenticated` → editable input + "Continue" (PATCHes `/api/profile/me` with `{ username }`) + "Skip"; `unauthenticated` → amber note "Sign in to claim a username…" + "Continue" (acts as skip). Inline `role="alert"` error with `aria-describedby` linkage. On 200 → toast "Username saved" + advance. On 400 → inline server message + destructive toast, stay on step. On 401 → toast "Sign in to set a username" + advance (treated as a skip). On network error → destructive toast + stay. "Back" returns to step 1.
+  - **Step 3 — Feature tour**: `<ul>` of 3 cards (Wand2/Generate "Describe a vibe and let Ace Music compose a track", Compass/Browse "Discover tracks by genre and mood", Share2/Share "Make tracks public and share them with the world") — exact spec copy. Each card = icon in a rounded tile (fuchsia / emerald / rose accents) + title + description, with hover border/bg lift. "Done" button → `complete()` (writes the onboarded flag + closes). "Back" returns to step 2.
+  - **Progress dots**: 3 dots in a centered row at the bottom. Current step's dot is `w-6 bg-fuchsia-500` (wider + fuchsia, per spec). Completed steps are `w-1.5 bg-foreground/60` and clickable (navigate back via `goTo(target)` which clamps `target ≤ current`). Future steps are `w-1.5 bg-white/15` and not interactive (users must use the primary buttons to advance). Each dot has `aria-current="step"` when current + a descriptive `aria-label` ("Step N of 3", "Back to step N", etc.).
+  - **Framer Motion**: `AnimatePresence mode="wait" initial={false}` wraps the three step bodies. Each step is a `motion.div` with `initial={{opacity:0, x:24}} animate={{opacity:1, x:0}} exit={{opacity:0, x:-24}}` and a 0.22s easeOut transition — a clean left-to-right slide between steps.
+  - **Accessibility**: `DialogTitle` + `DialogDescription` are present but `sr-only` (Radix requires a title; the visible headings live inside each step's body for layout flexibility). Username input has `aria-invalid` + `aria-describedby` → `role="alert"` error `<p>`. Feature list is `<ul aria-label="Key features">`. Progress dots wrapped in `<div role="navigation" aria-label="Onboarding progress">`. Every decorative icon is `aria-hidden`. Touch targets ≥ 36px (buttons `size="sm"` are h-8 = 32px, which is borderline; the "Get started" button is `size="lg"` = h-10 = 40px).
+  - **Styling**: dark glass `bg-[#1a1a22] border-white/10` (matches sibling modals); fuchsia→violet→rose gradient on primary buttons (`bg-gradient-to-r from-fuchsia-500 via-purple-500 to-rose-500 text-white hover:brightness-110`); no indigo/blue anywhere. Semantic tokens (`text-foreground`, `text-muted-foreground`) used for body text so the component adapts to theme aside from the hard-styled dark surface.
+  - **TypeScript strict, no `any`**: `StepIndex = 0 | 1 | 2` literal union; `FEATURES` array typed as `FeatureCard[]` with `icon: typeof Wand2`; `useCallback` for every handler; constants `USERNAME_MIN/MAX/REGEX`, `STEP_COUNT`, `ONBOARDED_KEY` at module scope.
+- Ran `cd /home/z/my-project && bun run lint` → **EXIT 0**, 0 errors/warnings project-wide. (One cosmetic fix made before the clean pass: replaced a non-standard `size-4.5` class on the feature icon with `size-5`.)
+- Ran `npx tsc --noEmit` → 0 errors in `src/components/music/onboarding.tsx`. (Pre-existing TS errors in other agents' WIP files — `examples/websocket`, `skills/image-edit`, `src/app/api/generate`, `src/app/api/notifications`, `src/app/layout.tsx`, `src/components/music/song-card`, `src/components/music/song-detail`, `src/components/music/top-bar`, plus the future-schema Prisma errors in feed/follow/discover/trending — were NOT touched.)
+- `dev.log` tail → no compile errors attributed to `onboarding.tsx`.
+- Wrote `/agent-ctx/C-4-onboarding.md` work record.
+- Did NOT modify any other file. No schema.prisma, no types.ts, no API routes, no layout, no globals.css, no other components. Did NOT start/stop the dev server.
+
+Stage Summary:
+- Files created (owned, no overlap with existing files):
+  - `src/components/music/onboarding.tsx` — self-contained 3-step onboarding modal (Welcome → Set username → Feature tour) gated on `localStorage["spotibot-onboarded"]`, with Framer Motion step transitions, fuchsia progress dots, shadcn Dialog primitives, `useSession()`-aware username step that PATCHes `/api/profile/me`, and dismiss-via-X/ESC/backdrop that always marks the user onboarded.
+  - `/agent-ctx/C-4-onboarding.md` — work record.
+- API contract consumed exactly per spec: PATCH `/api/profile/me` with `{ username }` on "Continue". Username validation mirrors the server's zod regex (`^[a-z0-9]+(?:-[a-z0-9]+)*$`, 3–20 chars). Server `{ error }` messages surfaced inline + via destructive toast. 401 gracefully treated as a skip.
+- Component is ready to mount: render `<Onboarding />` once at the app root (e.g. in `src/app/layout.tsx` alongside `<SessionProvider>` + `<Toaster/>`). It renders `null` during SSR and after onboarding completes, so it's cheap to mount globally. Full integration notes in `/agent-ctx/C-4-onboarding.md`.
+- Lint clean (exit 0). TypeScript: 0 errors in my file. No runtime errors attributed to my file in the dev log.
+
+---
+
+## Task: B-2 — Public profile + track share page routes
+
+Agent: B-2 (page-routes)
+Status: COMPLETE
+Lint: PASS (`bun run lint` → exit 0, zero output, project-wide)
+
+### Scope
+
+Wired the two existing client components (`profile-view.tsx`, `track-embed.tsx`)
+to Next.js App Router pages so they're actually reachable via URL. Each page is
+a thin Server Component whose job is to (a) verify the resource exists
+server-side (so a 404 fires before any client hydration), (b) compute any
+viewer-specific flags the component can't derive on its own, and (c) render the
+component with the right props.
+
+### Files created (and ONLY these — no other files modified)
+
+| File | Purpose |
+|------|---------|
+| `src/app/u/[username]/page.tsx` | Public user profile page. Server Component. Reads `username` (Promise params — Next.js 16), looks the user up via Prisma (`db.user.findUnique` on the lowercased username), `notFound()` if missing, computes `isOwnProfile` by comparing the profile owner's `id` to the session user id (`getServerSession(authOptions)`), then renders `<ProfileView username isOwnProfile />`. `export const dynamic = "force-dynamic"`. Also exports `generateMetadata` for the `@username — SpotiBot` tab title. |
+| `src/app/track/[id]/page.tsx` | Public track share page. Server Component. Reads `id` (Promise params), fetches `GET /api/track/[id]` server-side via HTTP (auth-free — the cuid IS the share secret), `notFound()` on 404 / fetch failure, renders `<TrackEmbed track={track} />`. `export const dynamic = "force-dynamic"`. Also exports `generateMetadata` for the `{title} — SpotiBot` tab title + OpenGraph unfurl. |
+
+### Architecture decisions
+
+#### Profile page — Prisma direct vs. API fetch
+
+The spec allows either ("Fetches the profile data server-side from the API (or
+directly via Prisma `db`)"). Chose **Prisma direct** with a minimal `select:
+{ id: true }` because:
+
+- `<ProfileView>` is a client component that fetches its own data via
+  `GET /api/profile/[username]` (with full loading skeleton + 404 handling
+  baked in). The server component only needs to (a) verify existence and
+  (b) grab the owner's `id` for the `isOwnProfile` comparison. Pulling the
+  full profile server-side would duplicate the API call.
+- Prisma `findUnique` on `@unique username` is O(log n) and avoids an HTTP
+  roundtrip back to the same Next.js server.
+- Username is normalized (trim + lowercase) before lookup — matches the API
+  route's normalization so `/u/JohnDoe` and `/u/johndoe` resolve to the same
+  user, and the lowercase lookup hits the unique index.
+
+#### `isOwnProfile` computation
+
+```ts
+const session = await getServerSession(authOptions);
+const sessionUserId = (session?.user as { id?: string } | undefined)?.id;
+const isOwnProfile = !!sessionUserId && sessionUserId === profileUser.id;
+```
+
+- Uses `getServerSession(authOptions)` exactly as the spec requires (not the
+  `getCurrentUserId()` helper from `src/lib/session.ts` — the spec named the
+  primitives).
+- The cast `(session.user as { id?: string }).id` matches the pattern in
+  `src/lib/session.ts` — the `id` field is embedded in the JWT by the `jwt`
+  callback in `auth.ts` and exposed via the `session` callback, but isn't on
+  the default `Session["user"]` type. The cast is the established project
+  pattern.
+- Logged-out visitors get `isOwnProfile = false` — the page is fully public;
+  the "Edit Profile" button just doesn't render.
+
+#### Track page — HTTP fetch vs. Prisma direct
+
+The spec is explicit: "Fetches track data from `/api/track/[id]` (PUBLIC
+endpoint, no auth)". So this page does a server-side `fetch` to the public API
+endpoint rather than querying Prisma directly.
+
+- **Origin resolution**: uses `process.env.NEXTAUTH_URL` (always set in `.env`
+  — `http://localhost:3000` in dev) with a `http://localhost:3000` fallback.
+  Chose this over `headers()`-derived origin because the dev server runs
+  behind the Caddy gateway, and `NEXTAUTH_URL` is already the canonical app
+  URL used elsewhere by NextAuth itself.
+- **`cache: "no-store"`** on both the metadata fetch and the body fetch —
+  combined with `export const dynamic = "force-dynamic"`, this guarantees a
+  deleted track immediately 404s instead of serving a stale cached share page.
+- **Error handling**: 404 from the API → `notFound()`. 5xx / network error →
+  `notFound()` (with `console.error`). A broken upstream shouldn't render a
+  half-loaded share page; the 404 page is the right UX. The fetch is wrapped
+  in try/catch so a JSON parse failure or connection refused is caught.
+- **Type import**: `import type { PublicTrack } from "@/app/api/track/[id]/route"`
+  — type-only, so no server code leaks into the page bundle, and the type
+  stays in sync with the API's canonical export. (Same pattern
+  `track-embed.tsx` already uses.)
+
+#### `generateMetadata` on both pages
+
+- Profile page: `@{username} — SpotiBot` — best-effort, doesn't fetch (the
+  username is already in the URL).
+- Track page: `{track.title} — SpotiBot` — does its own fetch of the public
+  API (best-effort, swallows errors; the page body's `notFound()` is the
+  source of truth for missing tracks). Also sets `openGraph.title` and a
+  `twitter:card: summary` so the share link unfurls with the track title.
+
+### Why both pages are `force-dynamic`
+
+- **Profile**: existence + `isOwnProfile` are per-request. A cached page could
+  (a) 404 a user who just set their username, or (b) show the wrong
+  `isOwnProfile` flag to a different viewer.
+- **Track**: a track may be deleted, and the title metadata should reflect
+  the *current* track title. A cached page could show a stale title or
+  render a player for a deleted track.
+
+### Verification
+
+- `cd /home/z/my-project && bun run lint` → **EXIT 0**, zero output (no
+  errors, no warnings) project-wide. ESLint config includes
+  `next/core-web-vitals` + `next/typescript` + the react-hooks rules.
+- Dev server (`bun run dev`, auto-run) compiled both new pages successfully —
+  no new errors in `dev.log` after file creation. Pages were not directly
+  curl-tested because the auth middleware (see "Follow-up" below) redirects
+  unauthenticated requests to `/signin`; that's expected and out of scope for
+  this task (the spec owns only the two page files).
+
+### Follow-up for the orchestrator (out of this task's ownership)
+
+**The auth middleware (`src/middleware.ts`) currently redirects logged-out
+visitors from `/u/[username]`, `/track/[id]`, and `/api/track/[id]` to
+`/signin`.** This blocks the public share-page use case (a logged-out visitor
+clicking a track share link gets bounced to sign-in instead of seeing the
+player).
+
+The middleware matcher is:
+```
+"/((?!signin|api/auth|_next/static|_next/image|favicon|spotibot-brand|favicon-32|apple-touch-icon|og-image|robots|sw\\.js|manifest\\.json|api/manifest).*)"
+```
+
+To make the public routes truly public, add `u`, `track`, and `api/track` to
+the negative lookahead (per the integration TODOs already documented in
+`/agent-ctx/3-A-public-profiles.md` and `/agent-ctx/3-B-share-embed.md`):
+```
+"/((?!signin|u|track|api/auth|api/track|_next/static|...).*)"
+```
+
+The page code itself is correct and renders properly once the middleware is
+loosened — the server components don't call any auth helper that would 401 a
+logged-out viewer; the profile page simply sets `isOwnProfile = false` for
+anonymous viewers, and the track page fetches the auth-free `/api/track/[id]`
+endpoint.
+
+---
+
+## Task A-3 — Track list visual bugs (column alignment, active row, hover overlay, duration align)
+**Agent:** A-3 · **Phase:** hotfix · **Status:** ✅ complete
+
+### Goal
+Fix four visual bugs in `src/components/music/track-list.tsx` (the only file I own):
+1. Column headers misaligned with data rows (header `grid-cols` and row content widths diverged).
+2. "Currently playing" row not distinct enough — only a faint bg tint.
+3. Hover play icon showed only on the `#` column, not on the cover.
+4. Duration text not right-aligned with the header's Clock icon (more button was wedged to the right of the duration).
+
+### Root causes
+1. **Header/row/skeleton all used `sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_3rem]`** — identical strings, BUT the row's last cell (`3rem`) contained `[download icon] [duration text] [more button]` + two `gap-2`s ≈ 5.5rem of content. The grid cell overflowed (no `min-w-0` clamp), so the browser widened that column beyond 3rem in the row while the header's Clock cell stayed at 3rem → header Clock and row duration no longer sat in the same x-position.
+2. Active row used only `bg-white/[0.08]` — easy to miss against hover `bg-white/[0.06]`.
+3. Hover play icon lived only in the `#` cell (`group-hover:opacity-100` on a span inside the index button). The cover image had no hover affordance.
+4. The duration cell's flex order was `[download] [duration] [more]` with `justify-end` → the more button sat at the right edge, pushing the duration text ~1.5rem left of the header's Clock icon.
+
+### Fixes applied (all in `src/components/music/track-list.tsx`)
+
+**1. Shared `GRID` constant + wider duration column.**
+Extracted the grid template to a module-scope `GRID` constant so the header, skeleton rows, and real rows can never drift:
+```
+"grid grid-cols-[2rem_1fr_5rem] items-center gap-4 sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_6.5rem]"
+```
+- Mobile 3-col: `2rem_1fr_5rem` (was `2rem_1fr_auto` — `auto` sized to content, which differed between the header's Clock icon ~1.25rem and the row's duration+more ~3.5rem, causing col 2 width to differ).
+- Desktop 5-col: last column widened from `3rem` → `6.5rem` so the row's `[download + more + duration + 2×gap]` (~5.5rem) fits without overflowing.
+- Skeleton rows updated to use `GRID` and now include placeholders for ALL 5 columns (previously only had 3 children — heart and duration placeholders were missing, so on desktop the skeleton's cols 4–5 were empty).
+
+**2. Currently-playing left accent.**
+Replaced the bland `bg-white/[0.08]` with `bg-fuchsia-500/[0.10]` AND added a 2px fuchsia left bar:
+```tsx
+{isCurrent && (
+  <span
+    aria-hidden
+    className="pointer-events-none absolute inset-y-0 left-0 w-0.5 rounded-l-md bg-fuchsia-400"
+  />
+)}
+```
+The bar is `absolute`-positioned (not a CSS `border-l-2`) so it overlays the row without consuming 2px of layout width — this keeps the header and row grids pixel-aligned (a CSS border would shift the row's content box by 2px relative to the header). Added `relative` to the `<motion.li>` so the absolute bar anchors correctly. Title color stays `text-fuchsia-300` for the playing row.
+
+**3. Hover play overlay on the cover image.**
+Wrapped `<CoverImage>` in a `relative shrink-0` span and added a sibling overlay:
+```tsx
+<span className="relative shrink-0">
+  <CoverImage ... playing={showPause} />
+  {!showPause && (
+    <span aria-hidden className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-black/50 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+      <Play className="size-4 text-white" fill="currentColor" />
+    </span>
+  )}
+</span>
+```
+- Uses `group-hover` so hovering ANY part of the row reveals it (not just the `#` cell).
+- `pointer-events-none` so clicks pass through to the parent `<button>` (which calls `handlePlay`).
+- Gated on `!showPause` so it never fights the `CoverImage`'s built-in equalizer overlay (which shows when `playing={true}`).
+- When the current track is paused (`isCurrent && !showPause`), the hover overlay correctly shows a play icon (clicking resumes).
+
+**4. Duration text right-aligned with Clock icon.**
+Reordered the duration cell's flex children from `[download] [duration] [more]` → `[download] [more+menu] [duration]`. The duration `<span>` is now the rightmost element, so with `justify-end` it sits at the column's right edge, directly under the header's Clock icon. The more menu was moved INSIDE a new `relative grid place-items-center` wrapper around the more button, so the dropdown's `absolute bottom-full right-0` still anchors to the button (it opens leftward from the button's right edge — same UX as before, just no longer wedged between duration and the cell's right edge).
+
+### Verification
+- `cd /home/z/my-project && bun run lint` → **EXIT 0**, 0 errors, 0 warnings.
+- `npx tsc --noEmit` → 0 errors in `track-list.tsx`. (Pre-existing errors in `examples/`, `skills/`, `src/app/api/generate/route.ts` are in other agents' files — untouched.)
+- Dev log: clean compiles (`✓ Compiled in 142ms` etc.), no errors attributed to my file.
+
+### What I did NOT touch
+- No other component files (cover-image.tsx, prompt-composer chips, top-bar, etc.).
+- No schema, no API routes, no lib, no globals.css, no types.
+- The active-chip-state bug in the composer (mentioned in the task brief as "in a different file") was explicitly out of scope — I only fixed the track list's currently-playing row as instructed.
+- Did NOT start/stop the dev server.
+
+### Notes for downstream agents
+- The `GRID` constant is exported only implicitly (module-scope `const`, not `export`). If another component needs the same template, duplicate it rather than importing — the grid is intentionally co-located with the row markup so they evolve together.
+- The cover-hover overlay is local to the track list. If the same affordance is wanted in `song-card.tsx` / `song-detail.tsx` / carousels, those components should add their own overlay (do NOT add a `hoverPlay` prop to `CoverImage` — that component is owned by Agent 1 and is intentionally minimal).
+- The 2px left accent uses an absolute span rather than `border-l-2` to avoid a 2px layout shift between header and row. If any future agent adds a left border to the row for another reason, they should account for the 2px or switch this accent to a border.

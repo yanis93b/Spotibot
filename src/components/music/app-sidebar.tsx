@@ -16,11 +16,22 @@ import {
   Compass,
   BarChart3,
   Settings as SettingsIcon,
+  Globe,
+  Rss,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AceStatusIndicator } from "./ace-status-indicator";
 
-export type SidebarView = "create" | "library" | "liked" | "playlist" | "browse" | "analytics" | "settings";
+export type SidebarView =
+  | "create"
+  | "library"
+  | "liked"
+  | "playlist"
+  | "browse"
+  | "discover"
+  | "feed"
+  | "analytics"
+  | "settings";
 
 export interface AppSidebarProps {
   view: SidebarView;
@@ -39,6 +50,8 @@ export interface AppSidebarProps {
   onOpenPlaylist: (id: string) => void;
   /** The currently-open playlist id (for highlight). */
   activePlaylistId?: string | null;
+  /** Open the signed-in user's profile page/view. */
+  onViewProfile?: () => void;
 }
 
 /**
@@ -58,6 +71,7 @@ export function AppSidebar({
   onCreatePlaylist,
   onOpenPlaylist,
   activePlaylistId,
+  onViewProfile,
 }: AppSidebarProps) {
   return (
     <aside
@@ -101,6 +115,18 @@ export function AppSidebar({
             onClick={() => onViewChange("browse")}
             icon={<Compass className="size-5" aria-hidden />}
             label="Browse"
+          />
+          <NavBtn
+            active={view === "discover"}
+            onClick={() => onViewChange("discover")}
+            icon={<Globe className="size-5" aria-hidden />}
+            label="Discover"
+          />
+          <NavBtn
+            active={view === "feed"}
+            onClick={() => onViewChange("feed")}
+            icon={<Rss className="size-5" aria-hidden />}
+            label="Feed"
           />
           <NavBtn
             active={view === "analytics"}
@@ -245,7 +271,7 @@ export function AppSidebar({
           <button
             type="button"
             onClick={onCreatePlaylist}
-            className="mt-2 flex w-full items-center gap-3 rounded-md p-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-white"
+            className="flex w-full items-center gap-3 rounded-md p-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-white"
           >
             <span className="grid size-12 place-items-center rounded-md bg-gradient-to-br from-fuchsia-500/80 to-purple-600/80">
               <Plus className="size-5 text-white" aria-hidden />
@@ -269,7 +295,7 @@ export function AppSidebar({
             <Github className="size-4" aria-hidden />
           </a>
         </div>
-        <UserBar />
+        <UserBar onViewProfile={onViewProfile} />
       </div>
     </aside>
   );
@@ -371,9 +397,10 @@ function hueFromName(name: string): number {
 
 /**
  * User bar: shows the signed-in user's avatar + email + a sign-out button.
- * Renders a skeleton while the session is loading.
+ * Renders a skeleton while the session is loading. The user's name is
+ * clickable (calls `onViewProfile`) when the handler is provided.
  */
-function UserBar() {
+function UserBar({ onViewProfile }: { onViewProfile?: () => void }) {
   const { data: session, status } = useSession();
 
   if (status === "loading") {
@@ -404,7 +431,20 @@ function UserBar() {
         </span>
       )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs font-medium text-foreground">{name}</span>
+        {onViewProfile ? (
+          <button
+            type="button"
+            onClick={onViewProfile}
+            title="View my profile"
+            className="block w-full truncate text-left text-xs font-medium text-foreground transition-colors hover:text-fuchsia-300 hover:underline"
+          >
+            {name}
+          </button>
+        ) : (
+          <span className="block truncate text-xs font-medium text-foreground">
+            {name}
+          </span>
+        )}
         <span className="block truncate text-[10px] text-muted-foreground">{email}</span>
       </span>
       <button

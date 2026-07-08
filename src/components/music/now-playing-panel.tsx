@@ -27,17 +27,56 @@ export function NowPlayingPanel({ song, onToggleLike }: NowPlayingPanelProps) {
 
   if (!song) {
     return (
-      <aside className="hidden w-[340px] shrink-0 flex-col rounded-lg border border-white/[0.06] bg-gradient-to-b from-[#1a1a22] to-[#0f0f15] p-4 xl:flex">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <aside className="relative hidden w-[340px] shrink-0 flex-col overflow-hidden rounded-lg border border-fuchsia-500/10 bg-gradient-to-b from-[#1c1428] via-[#15101f] to-[#0f0f15] p-4 xl:flex">
+        {/* Decorative gradient glows (fuchsia + violet) */}
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_28%,rgba(217,70,239,0.22),transparent_58%)]"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_78%,rgba(139,92,246,0.16),transparent_55%)]"
+          aria-hidden
+        />
+
+        <p className="relative mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Now Playing
         </p>
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-          <span className="grid size-16 place-items-center rounded-full bg-white/5 ring-1 ring-white/10">
-            <Music2 className="size-7 text-muted-foreground" aria-hidden />
-          </span>
-          <p className="text-sm text-muted-foreground">
-            Select a track to see its cover, lyrics, and details here.
-          </p>
+
+        <div className="relative flex flex-1 flex-col items-center justify-center gap-5 px-2 text-center">
+          {/* Logo with pulsing glow */}
+          <div className="relative grid place-items-center">
+            <motion.span
+              aria-hidden
+              className="absolute inset-0 -z-10 rounded-full bg-fuchsia-500/40 blur-2xl"
+              animate={{ opacity: [0.4, 0.75, 0.4], scale: [1, 1.12, 1] }}
+              transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+            />
+            <motion.span
+              aria-hidden
+              className="absolute inset-[-6px] -z-10 rounded-full bg-violet-500/25 blur-xl"
+              animate={{ opacity: [0.25, 0.55, 0.25], scale: [1.05, 1.18, 1.05] }}
+              transition={{ duration: 3.4, repeat: Infinity, ease: "easeInOut", delay: 0.3 }}
+            />
+            <motion.img
+              src="/spotibot-brand.png"
+              alt="SpotiBot logo"
+              width={80}
+              height={80}
+              className="size-20 rounded-2xl object-contain ring-1 ring-white/10"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.45, ease: "easeOut" }}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <h3 className="bg-gradient-to-r from-fuchsia-300 via-pink-200 to-violet-300 bg-clip-text text-xl font-bold tracking-tight text-transparent">
+              SpotiBot
+            </h3>
+            <p className="mx-auto max-w-[240px] text-sm leading-relaxed text-muted-foreground">
+              Select a track to see its cover, lyrics, and details here.
+            </p>
+          </div>
         </div>
       </aside>
     );

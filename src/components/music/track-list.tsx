@@ -34,6 +34,19 @@ function fmt(ms: number): string {
 }
 
 /**
+ * Shared grid template for the header, skeleton rows, and real rows.
+ * Mobile 3-col: `#` | Title | duration+more.
+ * Desktop 5-col: `#` | Title | Album | heart | duration+more.
+ *
+ * The duration column is wide enough (6.5rem on desktop, 5rem on mobile) to
+ * fit the download icon + more button + duration text + gaps without
+ * overflowing — previously it was 3rem and the row content pushed the column
+ * wider than the header, causing header/data misalignment.
+ */
+const GRID =
+  "grid grid-cols-[2rem_1fr_5rem] items-center gap-4 sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_6.5rem]";
+
+/**
  * Spotify-style track list table: #, cover+title+tags, album (genre/mood),
  * liked heart, duration, and a hover-revealed more menu (delete/download).
  *
@@ -62,15 +75,20 @@ export function TrackList({
   return (
     <section aria-label={title ?? "Tracks"} className="space-y-2">
       {showHeader && (
-        <div className="grid grid-cols-[2rem_1fr_auto] items-center gap-4 border-b border-white/[0.06] px-4 pb-2 text-xs uppercase tracking-wider text-muted-foreground sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_3rem]">
+        <div
+          className={cn(
+            GRID,
+            "border-b border-white/[0.06] px-4 pb-2 text-xs uppercase tracking-wider text-muted-foreground",
+          )}
+        >
           <span className="text-right">#</span>
           <span>Title</span>
           <span className="hidden sm:block">Album</span>
-          <span className="hidden sm:block text-center">
-            <Heart className="mx-auto size-3.5" aria-hidden />
+          <span className="hidden justify-center sm:flex">
+            <Heart className="size-3.5" aria-hidden />
           </span>
-          <span className="text-right">
-            <Clock className="ml-auto size-3.5" aria-hidden />
+          <span className="flex items-center justify-end">
+            <Clock className="size-3.5" aria-hidden />
           </span>
         </div>
       )}
@@ -78,11 +96,8 @@ export function TrackList({
       {loading ? (
         <div className="space-y-1">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              className="grid grid-cols-[2rem_1fr_auto] items-center gap-4 rounded-md px-4 py-2 sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_3rem]"
-            >
-              <div className="h-3 w-3 animate-pulse rounded bg-white/10" />
+            <div key={i} className={cn(GRID, "rounded-md px-4 py-2")}>
+              <div className="h-3 w-3 animate-pulse justify-self-end rounded bg-white/10" />
               <div className="flex items-center gap-3">
                 <div className="size-10 animate-pulse rounded bg-white/10" />
                 <div className="space-y-1.5">
@@ -91,6 +106,8 @@ export function TrackList({
                 </div>
               </div>
               <div className="hidden h-3 w-24 animate-pulse rounded bg-white/10 sm:block" />
+              <div className="hidden h-3 w-3 animate-pulse rounded bg-white/10 sm:block" />
+              <div className="h-3 w-10 animate-pulse justify-self-end rounded bg-white/10" />
             </div>
           ))}
         </div>
@@ -154,17 +171,26 @@ function TrackRow({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, height: 0 }}
       className={cn(
-        "group grid grid-cols-[2rem_1fr_auto] items-center gap-4 rounded-md px-4 py-2 transition-colors sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_3rem]",
-        isCurrent ? "bg-white/[0.08]" : "hover:bg-white/[0.06]",
+        "group relative grid grid-cols-[2rem_1fr_5rem] items-center gap-4 rounded-md px-4 py-2 transition-colors sm:grid-cols-[2rem_1fr_minmax(0,180px)_3rem_6.5rem]",
+        isCurrent ? "bg-fuchsia-500/[0.10]" : "hover:bg-white/[0.06]",
       )}
       onDoubleClick={handlePlay}
     >
+      {/* Currently-playing left accent — 2px fuchsia bar overlaid on the
+          left edge so it doesn't shift the grid layout. */}
+      {isCurrent && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-0.5 rounded-l-md bg-fuchsia-400"
+        />
+      )}
+
       {/* # / play button */}
       <button
         type="button"
         onClick={handlePlay}
         aria-label={showPause ? `Pause ${song.title}` : `Play ${song.title}`}
-        className="relative grid place-items-center text-right text-sm tabular-nums text-muted-foreground"
+        className="relative grid place-items-center justify-self-end text-right text-sm tabular-nums text-muted-foreground"
       >
         <span className={cn("group-hover:opacity-0", isCurrent && "opacity-0")}>{index}</span>
         <span className="absolute inset-0 grid place-items-center opacity-0 transition-opacity group-hover:opacity-100">
@@ -187,13 +213,25 @@ function TrackRow({
         onClick={handlePlay}
         className="flex min-w-0 items-center gap-3 text-left focus-visible:outline-none"
       >
-        <CoverImage
-          id={song.id}
-          src={song.coverUrl}
-          alt={song.title}
-          size={40}
-          playing={showPause}
-        />
+        <span className="relative shrink-0">
+          <CoverImage
+            id={song.id}
+            src={song.coverUrl}
+            alt={song.title}
+            size={40}
+            playing={showPause}
+          />
+          {/* Hover play overlay on the cover (hidden while the equalizer
+              overlay is showing for the playing track). */}
+          {!showPause && (
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-black/50 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+            >
+              <Play className="size-4 text-white" fill="currentColor" />
+            </span>
+          )}
+        </span>
         <span className="min-w-0 flex-1">
           <span
             className={cn(
@@ -230,7 +268,11 @@ function TrackRow({
         <Heart className={cn("size-4", song.liked && "fill-rose-400")} aria-hidden />
       </button>
 
-      {/* Duration + more menu */}
+      {/* Duration + more menu.
+          Order is [download] [more+menu] [duration] so the duration text sits
+          at the right edge of the column, perfectly aligned with the header's
+          Clock icon. The more menu is anchored to the more-button wrapper so
+          its `right-0` still opens the dropdown leftward from the button. */}
       <div className="relative flex items-center justify-end gap-2 text-right text-sm tabular-nums text-muted-foreground">
         <a
           href={song.audioUrl}
@@ -241,54 +283,56 @@ function TrackRow({
         >
           <Download className="size-4" aria-hidden />
         </a>
-        <span>{fmt(song.durationMs)}</span>
-        <button
-          type="button"
-          aria-label="More options"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={(e) => {
-            e.stopPropagation();
-            setMenuOpen((o) => !o);
-          }}
-          className="grid place-items-center rounded opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-        >
-          <MoreHorizontal className="size-4" aria-hidden />
-        </button>
-        {menuOpen && (
-          <div
-            role="menu"
-            className="absolute bottom-full right-0 z-20 mb-1 w-56 overflow-visible rounded-lg border border-white/10 bg-[#1a1a22] py-1 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
+        <span className="relative grid place-items-center">
+          <button
+            type="button"
+            aria-label="More options"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((o) => !o);
+            }}
+            className="grid place-items-center rounded opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
           >
-            {/* Add to playlist (with nested submenu) */}
-            {playlists && onAddToPlaylist && onCreatePlaylist && (
-              <AddToPlaylistMenu
-                songId={song.id}
-                playlists={playlists}
-                onAdd={onAddToPlaylist}
-                onCreateNew={() => {
-                  setMenuOpen(false);
-                  onCreatePlaylist();
-                }}
-                triggerClassName="w-full"
-              />
-            )}
-            <div className="mx-2 my-1 border-t border-white/[0.06]" />
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onDelete(song.id);
-              }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-rose-300 transition-colors hover:bg-rose-500/15"
+            <MoreHorizontal className="size-4" aria-hidden />
+          </button>
+          {menuOpen && (
+            <div
+              role="menu"
+              className="absolute bottom-full right-0 z-20 mb-1 w-56 overflow-visible rounded-lg border border-white/10 bg-[#1a1a22] py-1 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
             >
-              <Trash2 className="size-3.5" aria-hidden />
-              Delete
-            </button>
-          </div>
-        )}
+              {/* Add to playlist (with nested submenu) */}
+              {playlists && onAddToPlaylist && onCreatePlaylist && (
+                <AddToPlaylistMenu
+                  songId={song.id}
+                  playlists={playlists}
+                  onAdd={onAddToPlaylist}
+                  onCreateNew={() => {
+                    setMenuOpen(false);
+                    onCreatePlaylist();
+                  }}
+                  triggerClassName="w-full"
+                />
+              )}
+              <div className="mx-2 my-1 border-t border-white/[0.06]" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onDelete(song.id);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-rose-300 transition-colors hover:bg-rose-500/15"
+              >
+                <Trash2 className="size-3.5" aria-hidden />
+                Delete
+              </button>
+            </div>
+          )}
+        </span>
+        <span className="text-right">{fmt(song.durationMs)}</span>
       </div>
     </motion.li>
   );

@@ -18,10 +18,17 @@ import { BrowseView } from "@/components/music/browse-view";
 import { QueuePanel } from "@/components/music/queue-panel";
 import { AnalyticsView } from "@/components/music/analytics-view";
 import { SettingsView } from "@/components/music/settings-view";
+import { DiscoverView } from "@/components/music/discover-view";
+import { FeedView } from "@/components/music/feed-view";
+import { ShareDialog } from "@/components/music/share-dialog";
+import { RadioToggle } from "@/components/music/radio-toggle";
+import { LyricsEditor } from "@/components/music/lyrics-editor";
 import { useSongs } from "@/hooks/use-songs";
 import { usePlaylists } from "@/hooks/use-playlists";
 import { usePlayerStore } from "@/lib/player-store";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useSession } from "next-auth/react";
+import { useRadio } from "@/hooks/use-radio";
 import { CoverImage } from "@/components/music/cover-image";
 import { Play, Pause, Heart, Clock, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -83,7 +90,12 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [lyricsEditorOpen, setLyricsEditorOpen] = useState(false);
+  const [profileViewOpen, setProfileViewOpen] = useState(false);
   const { toast } = useToast();
+  const { data: session } = useSession();
+  useRadio(); // enable radio/autoplay (reads localStorage for enabled state)
 
   const patchCurrent = usePlayerStore((s) => s.patchCurrent);
   const playSong = usePlayerStore((s) => s.playSong);
@@ -320,6 +332,12 @@ export default function Home() {
         onCreatePlaylist={() => setCreateDialogOpen(true)}
         onOpenPlaylist={handleOpenPlaylist}
         activePlaylistId={activePlaylistId}
+        onViewProfile={() => {
+          const username = session?.user?.name;
+          if (username) {
+            window.open(`/u/${username.toLowerCase().replace(/\s+/g, "-")}`, "_blank");
+          }
+        }}
       />
 
       {/* Center + right column */}
@@ -419,6 +437,26 @@ export default function Home() {
                     onCreatePlaylist={() => setCreateDialogOpen(true)}
                   />
                 </motion.div>
+              ) : view === "discover" ? (
+                <motion.div
+                  key="discover"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <DiscoverView onPlay={playSong} />
+                </motion.div>
+              ) : view === "feed" ? (
+                <motion.div
+                  key="feed"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <FeedView onPlay={playSong} />
+                </motion.div>
               ) : view === "analytics" ? (
                 <motion.div
                   key="analytics"
@@ -498,7 +536,13 @@ export default function Home() {
         />
 
         {/* Sticky bottom player */}
-        <BottomPlayer onToggleLike={handleToggleLike} onNext={handleNext} onPrev={handlePrev} />
+        <BottomPlayer
+          onToggleLike={handleToggleLike}
+          onNext={handleNext}
+          onPrev={handlePrev}
+          onQueueToggle={() => setQueuePanelOpen((v) => !v)}
+          onShare={() => setShareDialogOpen(true)}
+        />
       </div>
 
       {/* Queue panel (slide-in from right) */}
@@ -513,6 +557,30 @@ export default function Home() {
         onOpenChange={setCreateDialogOpen}
         onCreate={handleCreatePlaylist}
       />
+
+      {/* Share dialog for the current track */}
+      {current && (
+        <ShareDialog
+          trackId={current.id}
+          trackTitle={current.title}
+          open={shareDialogOpen}
+          onOpenChange={setShareDialogOpen}
+        />
+      )}
+
+      {/* Lyrics editor for the current track */}
+      {current && (
+        <LyricsEditor
+          songId={current.id}
+          initialLyrics={current.lyrics}
+          open={lyricsEditorOpen}
+          onOpenChange={setLyricsEditorOpen}
+          onSaved={(newLyrics) => {
+            patchCurrent({ lyrics: newLyrics });
+            toast({ title: "Lyrics updated" });
+          }}
+        />
+      )}
     </div>
   );
 }

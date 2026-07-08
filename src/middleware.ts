@@ -14,10 +14,9 @@ export default withAuth({
 });
 
 export const config = {
-  // Protect everything EXCEPT: the sign-in page, the auth API, static assets,
-  // the PWA service worker and web manifest (must be reachable pre-auth so the
-  // SW can register and the app can be installed).
+  // Protect everything EXCEPT: sign-in, auth API, static assets, PWA SW/manifest,
+  // and PUBLIC routes (public profiles /u/*, public tracks /track/*, public track API).
   matcher: [
-    "/((?!signin|api/auth|_next/static|_next/image|favicon|spotibot-brand|favicon-32|apple-touch-icon|og-image|robots|sw\\.js|manifest\\.json|api/manifest).*)",
+    "/((?!signin|api/auth|api/track|api/discover|api/trending|api/manifest|_next/static|_next/image|favicon|spotibot-brand|favicon-32|apple-touch-icon|og-image|robots|sw\\.js|manifest\\.json|u|track).*)",
   ],
 };
