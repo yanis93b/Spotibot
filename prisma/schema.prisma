@@ -21,6 +21,7 @@ model User {
   // Public profile fields (Phase 3)
   username  String?    @unique // lowercase, alphanumeric + hyphens, 3–20 chars
   bio       String? // free-form bio, max 200 chars
+  isAdmin   Boolean  @default(false) // admin flag for admin panel access
   createdAt DateTime   @default(now())
 
   songs     Song[]
