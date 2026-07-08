@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Sparkles, X } from "lucide-react";
+import { X } from "lucide-react";
 import { EqualizerBars } from "./equalizer-bars";
 
 export interface GenerationLoaderProps {
@@ -74,7 +74,7 @@ export function GenerationLoader({ onCancel }: GenerationLoaderProps) {
         </button>
       )}
 
-      {/* Concentric spinning gradient rings */}
+      {/* Concentric spinning gradient rings with the SpotiBot logo at center */}
       <div className="relative grid size-24 place-items-center">
         <span className="music-spin-slow absolute inset-0 rounded-full border-2 border-transparent [background:conic-gradient(from_0deg,transparent,rgba(217,70,239,0.85),transparent_45%,rgba(139,92,246,0.7),transparent_75%)] [mask:linear-gradient(#000,#000)_content-box,linear-gradient(#000,#000)] [mask-composite:exclude] p-[2px]" />
         <span className="music-spin-rev absolute inset-2 rounded-full border-2 border-transparent [background:conic-gradient(from_180deg,transparent,rgba(244,63,94,0.7),transparent_60%,rgba(192,132,252,0.6),transparent)] [mask:linear-gradient(#000,#000)_content-box,linear-gradient(#000,#000)] [mask-composite:exclude] p-[2px]" />
@@ -82,9 +82,16 @@ export function GenerationLoader({ onCancel }: GenerationLoaderProps) {
           initial={{ scale: 0.85, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ duration: 0.4 }}
-          className="grid size-12 place-items-center rounded-full bg-gradient-to-br from-fuchsia-500 via-purple-500 to-rose-500 shadow-lg shadow-fuchsia-500/30"
+          className="grid size-14 place-items-center overflow-hidden rounded-full shadow-lg shadow-fuchsia-500/30 ring-1 ring-white/10"
         >
-          <Sparkles className="size-5 text-white" />
+          <img
+            src="/spotibot-brand.png"
+            alt="SpotiBot"
+            width={56}
+            height={56}
+            className="size-full object-cover"
+            draggable={false}
+          />
         </motion.div>
       </div>
 
