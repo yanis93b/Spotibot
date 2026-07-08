@@ -157,7 +157,7 @@ export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }
       {/* Decorative top gradient hairline */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-fuchsia-400/60 to-transparent" />
 
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <span className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500/30 to-rose-500/20 ring-1 ring-white/10">
             <Wand2 className="size-4 text-fuchsia-200" aria-hidden />
@@ -188,7 +188,7 @@ export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }
             className={cn(
               "rounded-md px-2.5 py-1 text-[11px] font-medium transition-all sm:px-3 sm:text-xs",
               mode === "simple"
-                ? "bg-gradient-to-r from-fuchsia-500/80 to-purple-500/80 text-white"
+                ? "bg-fuchsia-500 text-white shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -202,7 +202,7 @@ export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }
             className={cn(
               "rounded-md px-2.5 py-1 text-[11px] font-medium transition-all sm:px-3 sm:text-xs",
               mode === "custom"
-                ? "bg-gradient-to-r from-fuchsia-500/80 to-purple-500/80 text-white"
+                ? "bg-fuchsia-500 text-white shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -222,12 +222,12 @@ export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }
           placeholder="Describe your song… e.g. 'A dreamy lo-fi track about late-night city drives'"
           aria-label="Song description"
           maxLength={MAX_PROMPT}
-          className="min-h-[120px] resize-y rounded-xl border-white/10 bg-black/30 px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground/60 focus-visible:border-fuchsia-400/40"
+          className="min-h-[120px] resize-y rounded-xl border-white/10 bg-black/30 px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground/80 focus-visible:border-fuchsia-400/40"
         />
         <span
           className={cn(
             "pointer-events-none absolute bottom-2 right-3 text-[11px] tabular-nums",
-            remaining < 40 ? "text-rose-300" : "text-muted-foreground/70",
+            remaining < 40 ? "text-rose-300" : "text-muted-foreground",
           )}
           aria-hidden
         >
@@ -343,7 +343,7 @@ export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }
             aria-label="Track duration in seconds"
             className="[&_[data-slot=slider-range]]:bg-gradient-to-r [&_[data-slot=slider-range]]:from-fuchsia-500 [&_[data-slot=slider-range]]:to-rose-400 [&_[data-slot=slider-thumb]]:border-fuchsia-400 [&_[data-slot=slider-thumb]]:bg-white"
           />
-          <div className="mt-1 flex justify-between text-[10px] text-muted-foreground/60">
+          <div className="mt-1.5 flex justify-between text-[10px] text-muted-foreground/90">
             <span>10s</span>
             <span>3:00</span>
           </div>

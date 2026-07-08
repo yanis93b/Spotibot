@@ -340,7 +340,7 @@ export default function Home() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
                   transition={{ duration: 0.2 }}
-                  className="space-y-6"
+                  className="space-y-5"
                 >
                   {/* Hero greeting */}
                   <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">

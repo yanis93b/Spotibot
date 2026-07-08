@@ -139,7 +139,7 @@ export function BottomPlayer({ onToggleLike, onNext, onPrev }: BottomPlayerProps
 
               {/* ── CENTER: transport + seek ─────────────────────────────── */}
               <div className="flex flex-1 flex-col items-center gap-1.5 sm:basis-[40%]">
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-5">
                   <button
                     type="button"
                     aria-label="Shuffle"

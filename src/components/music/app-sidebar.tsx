@@ -108,7 +108,7 @@ export function AppSidebar({
 
       {/* Library card */}
       <div className="flex min-h-0 flex-1 flex-col rounded-lg bg-[#121214] p-3">
-        <div className="mb-2 flex items-center justify-between px-2">
+        <div className="mb-3 flex items-center justify-between px-1">
           <button
             type="button"
             onClick={() => onViewChange("library")}
@@ -221,10 +221,10 @@ export function AppSidebar({
           <button
             type="button"
             onClick={onCreatePlaylist}
-            className="mt-1 flex w-full items-center gap-3 rounded-md p-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-white"
+            className="mt-2 flex w-full items-center gap-3 rounded-md p-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-white/[0.04] hover:text-white"
           >
-            <span className="grid size-12 place-items-center rounded-md border border-dashed border-white/15 bg-white/[0.02]">
-              <Plus className="size-5" aria-hidden />
+            <span className="grid size-12 place-items-center rounded-md bg-gradient-to-br from-fuchsia-500/80 to-purple-600/80">
+              <Plus className="size-5 text-white" aria-hidden />
             </span>
             <span className="font-medium">Create Playlist</span>
           </button>
