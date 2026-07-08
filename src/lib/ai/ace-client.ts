@@ -292,7 +292,12 @@ export async function generateMusic(
   const payload = buildPayload(params);
   const url = `${ACE_API_BASE}/v1/chat/completions`;
 
-  const maxAttempts = 2;
+  // Retry up to 4 times on transient errors (5xx, 502/503/504, network) with
+  // exponential backoff. The Ace Music public endpoint occasionally returns
+  // 502 Bad Gateway when its backend restarts or is overloaded — a short
+  // retry loop absorbs these without surfacing an error to the user.
+  const maxAttempts = 4;
+  const backoffMs = [2000, 4000, 8000]; // delays before attempts 2, 3, 4
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -334,7 +339,6 @@ export async function generateMusic(
         // RateLimitError so the UI can show a friendly countdown.
         if (status === 429) {
           const parsed = parseRateLimitMessage(detail);
-          // Also honour the standard Retry-After header if present.
           const retryAfterHeader = Number(res.headers.get("retry-after"));
           const retryAfter =
             parsed?.retryAfterSeconds ||
@@ -351,11 +355,18 @@ export async function generateMusic(
           );
         }
 
-        // Retry on 5xx (server) only; 4xx (other than 429) is not retried.
+        // 5xx (including 502/503/504) = server error. Retry with backoff
+        // up to maxAttempts. These are transient on the Ace Music endpoint.
         if (status >= 500 && attempt < maxAttempts) {
           lastError = new Error(`HTTP ${status}: ${detail.slice(0, 200)}`);
-          await delay(1500 * attempt);
+          await delay(backoffMs[attempt - 1] ?? 8000);
           continue;
+        }
+        // Final 5xx attempt failed, or non-retryable 4xx.
+        if (status >= 500) {
+          throw new Error(
+            `Ace Music server error (HTTP ${status}). The service may be temporarily unavailable — please try again in a moment.`,
+          );
         }
         throw new Error(`HTTP ${status}: ${detail.slice(0, 300)}`);
       }
@@ -404,29 +415,37 @@ export async function generateMusic(
         throw err;
       }
       const msg = err instanceof Error ? err.message : String(err);
-      // Retry on network/abort errors only.
+      // Retry on network/abort errors (timeout, connection reset, fetch failed).
+      // These are transient — the Ace Music endpoint occasionally drops connections.
       const transient =
         msg.includes("ECONNRESET") ||
         msg.includes("ETIMEDOUT") ||
         msg.includes("fetch failed") ||
         msg.includes("aborted") ||
-        msg.includes("network");
+        msg.includes("network") ||
+        msg.includes("socket hang up") ||
+        msg.includes("UND_ERR");
       if (transient && attempt < maxAttempts) {
-        await delay(1500 * attempt);
+        await delay(backoffMs[attempt - 1] ?? 8000);
         continue;
       }
-      // Non-transient, or last attempt: surface the error.
-      throw new Error(
-        `Ace Music generation failed: ${msg}`,
-      );
+      // Non-transient, or last attempt: surface a clean error.
+      if (transient) {
+        throw new Error(
+          "Ace Music is not responding (network timeout after multiple retries). Please try again in a moment.",
+        );
+      }
+      throw new Error(`Ace Music generation failed: ${msg}`);
     } finally {
       clearTimeout(timer);
     }
   }
 
-  // Should be unreachable, but keep the type-checker happy.
+  // All attempts exhausted (5xx retries). Surface a friendly message.
   const msg = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`Ace Music generation failed: ${msg}`);
+  throw new Error(
+    `Ace Music generation failed after ${maxAttempts} attempts: ${msg}`,
+  );
 }
 
 /**

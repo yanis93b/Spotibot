@@ -63,17 +63,22 @@ export function AppSidebar({
         <a
           href="/"
           className="mb-3 flex items-center gap-2.5 rounded-md px-2 py-1 focus-visible:outline-none"
-          aria-label="AceMusic Studio home"
+          aria-label="SpotiBot home"
         >
-          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 via-purple-500 to-rose-500 shadow-lg shadow-fuchsia-500/25">
-            <Music2 className="size-5 text-white" aria-hidden />
-          </span>
+          <img
+            src="/spotibot-brand.png"
+            alt="SpotiBot logo"
+            width={36}
+            height={36}
+            className="size-9 shrink-0 rounded-lg shadow-lg shadow-fuchsia-500/20"
+            draggable={false}
+          />
           <span className="flex flex-col leading-none">
             <span className="gradient-text text-lg font-bold tracking-tight">
-              AceMusic
+              SpotiBot
             </span>
             <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground/70">
-              Studio
+              Le bot de musique moderne
             </span>
           </span>
         </a>

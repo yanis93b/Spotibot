@@ -14,31 +14,38 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AceMusic Studio — AI Music Generation",
+  title: "SpotiBot — Le bot de musique moderne",
   description:
-    "Generate original songs from a text prompt. Powered by the Ace Music model. A Suno-style AI music studio.",
+    "Génère des morceaux originaux à partir d'un prompt texte. Propulsé par le modèle Ace Music (ACE-Step v1.5). Interface façon Spotify.",
   keywords: [
+    "SpotiBot",
     "AI music",
     "Ace Music",
     "Suno alternative",
     "song generator",
     "text to music",
+    "générateur de musique",
     "Next.js",
   ],
-  authors: [{ name: "AceMusic Studio" }],
+  authors: [{ name: "SpotiBot" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: [
+      { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
   },
   openGraph: {
-    title: "AceMusic Studio — AI Music Generation",
-    description: "Generate original songs from a text prompt.",
-    siteName: "AceMusic Studio",
+    title: "SpotiBot — Le bot de musique moderne",
+    description: "Génère des morceaux originaux à partir d'un prompt texte. Propulsé par Ace Music.",
+    siteName: "SpotiBot",
     type: "website",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "SpotiBot" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "AceMusic Studio",
-    description: "Generate original songs from a text prompt.",
+    title: "SpotiBot",
+    description: "Le bot de musique moderne — génération IA de morceaux.",
+    images: ["/og-image.png"],
   },
 };
 
