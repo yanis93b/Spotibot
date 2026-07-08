@@ -39,7 +39,9 @@ export const authOptions: NextAuthOptions = {
         const user = await db.user.findUnique({ where: { email } });
         if (!user || !user.password) return null;
 
-        const valid = await bcrypt.compare(password, user.password);
+        // Use compareSync — bcryptjs v3's async compare can behave
+        // inconsistently in edge/serverless runtimes.
+        const valid = bcrypt.compareSync(password, user.password);
         if (!valid) return null;
 
         return { id: user.id, email: user.email, name: user.name ?? undefined, image: user.image ?? undefined };
