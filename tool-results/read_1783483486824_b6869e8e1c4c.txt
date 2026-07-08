@@ -1,0 +1,300 @@
+     1→   400→  - `src/lib/theme-init.tsx` — no-flash theme bootstrap (default-export client component, renders `null`, syncs `dark` class from `localStorage` on mount).
+     2→   401→  - `src/components/music/theme-toggle.tsx` — compact Sun/Moon icon button (`size-8`, icon `size-4`, rounded-full, ghost) that toggles + persists the theme via `localStorage`, with cross-tab sync via `useSyncExternalStore`.
+     3→   402→- The toggle is ready to drop into the existing 3-panel Spotify UI; all existing components already consume Tailwind theme tokens (`bg-background`, `text-foreground`, `border`, `card`, `muted-foreground`, …) defined in `globals.css` for both `:root` (light) and `.dark` (dark), so they will re-skin automatically when the `dark` class is removed.
+     4→   403→- Default theme remains `"dark"` (matches the current forced `<html className="dark">`), so no behavior change for existing users until they click the toggle.
+     5→   404→- Lint: `bun run lint` passes clean.
+     6→   405→- Awaiting orchestrator to wire `<ThemeInit/>` into the layout and `<ThemeToggle/>` into the header/top bar.
+     7→   406→
+     8→   407→---
+     9→   408→Task ID: 2-B
+    10→   409→Agent: browse-discover
+    11→   410→Task: Phase 2 of SpotiBot — build a Spotify-style Browse/Discover view (genre tiles + mood filters) backed by an owner-scoped `/api/browse` endpoint.
+    12→   411→
+    13→   412→Work Log:
+    14→   413→- Read worklog.md (architecture, API contract, file ownership, auth-scoping convention), src/lib/types.ts (Song/GENRES/MOODS/Playlist), src/lib/session.ts (getCurrentUserId), src/lib/db.ts, src/lib/song-mapper.ts (toPublicSong), prisma/schema.prisma (Song model + ownerId), and existing API routes (songs, songs/[id], playlists, playlists/[id]/tracks) to lock the auth + response + error-handling patterns.
+    15→   414→- Read src/components/music/track-list.tsx to confirm the exact TrackListProps shape (so BrowseView can pass through onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist verbatim) and src/components/music/cover-image.tsx for the deterministic-hue hashing scheme (reused for genre tile gradients).
+    16→   415→- Created src/app/api/browse/route.ts (GET):
+    17→   416→  - Auth gate (401 if not signed in) via getCurrentUserId; every query scoped by ownerId = userId (matches the auth-api-scoping convention from the previous round).
+    18→   417→  - Reads `genre` + `mood` from `new URL(req.url).searchParams`; validates against canonical GENRES/MOODS readonly tuples (cast to ReadonlySet<string> for O(1) lookups) → 400 on unknown values.
+    19→   418→  - Three response shapes: (a) no params → { genres: [{ genre, count, songs: Song[] }] } with top 4 per genre newest-first, genres with 0 songs dropped (implemented as Promise.all over GENRES running db.song.count + db.song.findMany({take:4}) per genre — ≤10 small parallel queries, no N+1); (b) ?genre=X → { songs: Song[] } (≤100, newest first); (c) ?genre=X&mood=Y → { songs: Song[] } filtered by both.
+    20→   419→  - Uses db from @/lib/db and toPublicSong from @/lib/song-mapper; 500 path catches all errors, logs server-side, returns generic { error: "Failed to load browse data." } with no stack leak — identical pattern to the songs/playlists routes.
+    21→   420→- Created src/components/music/browse-view.tsx ('use client'):
+    22→   421→  - Spotify-style Browse page: header → genre grid → mood chips → filtered TrackList.
+    23→   422→  - Genre grid: all 10 GENRES as gradient tiles in a responsive grid (2/3/4/5 cols), aspect-[16/10]. Gradient is deterministic per genre name via hueFromString hash → linear-gradient(135deg, hsl(h 65% 42%), hsl((h+40) 75% 32%)) — same hashing scheme as cover-image.tsx so colors are consistent. Tiles show genre name + track count (from the aggregate fetch). Clicking toggles the filter on/off.
+    24→   423→  - Mood chips: "All" + 8 MOODS in a flex-wrap row. Active = fuchsia accent (border-fuchsia-400 bg-fuchsia-500/20); inactive = white/[0.04] muted surface. Both tile + chip are real <button> elements with aria-pressed + descriptive aria-label, focus-visible rings.
+    25→   424→  - Reuses the existing <TrackList/> from ./track-list, passing through onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist verbatim.
+    26→   425→  - Single useEffect keyed on [selectedGenre, selectedMood, genres] handles every (genre, mood) combination: on mount (no genre, no cached genres) fetches GET /api/browse → caches buckets + seeds songs with flattened previews; genre selected → fetches ?genre=X[&mood=Y]; mood-only (no genre) → client-filters the cached previews by mood (no network round-trip); a `cancelled` flag prevents stale writes after rapid filter changes.
+    27→   426→  - UX: Reset-filters button appears when any filter is active; empty state (Sparkles + hint) when no tracks match; error state (rose-tinted alert) on fetch failure; dynamic heading ("Featured" → "Pop" → "Pop · Happy").
+    28→   427→  - Props: BrowseViewProps = { onToggleLike, onDelete, playlists?, onAddToPlaylist?, onCreatePlaylist? } — matches the spec exactly.
+    29→   428→- Ran `bun run lint` → EXIT 0, no errors/warnings in either new file. Dev log clean (no compile errors).
+    30→   429→
+    31→   430→Stage Summary:
+    32→   431→- Files created (owned, no overlap with existing files):
+    33→   432→  - src/app/api/browse/route.ts — GET aggregated + filtered browse data, auth-scoped.
+    34→   433→  - src/components/music/browse-view.tsx — Browse view (genre grid + mood chips + filtered TrackList).
+    35→   434→- /api/browse contract implemented exactly per spec: 3 response shapes (no params / ?genre / ?genre&mood), auth-required, owner-scoped, validated query params.
+    36→   435→- BrowseView is self-contained and ready to mount: render <BrowseView .../> in page.tsx and pass through the existing onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist handlers. A new SidebarView value (e.g. "browse") + sidebar nav entry is the natural integration point (orchestrator's job — I did not modify page.tsx or any other existing file).
+    37→   436→- TypeScript strict throughout, no `any`; uses GENRES/MOODS/Song/Playlist from @/lib/types. Dark theme only; accent palette is fuchsia (no indigo/blue).
+    38→   437→- Lint: `bun run lint` passes clean for the whole project.
+    39→   438→
+    40→   439→---
+    41→   440→Task ID: 2-A
+    42→   441→Agent: queue-history
+    43→   442→Task: Phase 2 — add a persistent play queue (Zustand) and a listening-history API (Prisma-backed, per-user scoped), plus the queue UI panel and a compact queue button for the bottom player.
+    44→   443→
+    45→   444→Work Log:
+    46→   445→- Read `src/lib/player-store.ts` to learn its API: `playSong(song)` loads a song into the shared `<audio>` element and starts playback; `getState()` exposes the store non-reactively. Designed the queue store to call `usePlayerStore.getState().playSong(song)` whenever the current track advances (next/prev/playFrom) — the queue store never touches the audio element directly.
+    47→   446→- Read `src/lib/session.ts` (`getCurrentUserId`), `src/lib/db.ts`, `src/lib/song-mapper.ts` (`toPublicSong`), `src/lib/types.ts` (`Song`), and the existing `api/playlists/route.ts` + `api/songs/[id]/route.ts` to match the auth-scoping + zod-validation + P2025→404 patterns established by the api-scoping agent.
+    48→   447→- Read `src/components/music/bottom-player.tsx` to understand the integration point (the placeholder ListMusic button at lines 220-227 will be swapped for `<QueueButton>`) and `cover-image.tsx` for cover rendering.
+    49→   448→- Created `src/lib/queue-store.ts` — Zustand store. `queue: Song[]` holds the full ordered list (including current); `currentIndex` (-1 = empty) points at the playing track. Actions: `playFrom` (load a list at index, start playing), `addToQueue` (append), `playNext` (insert after current), `removeFromQueue` (adjusts index), `clearQueue`, `reorderQueue` (DnD; tracks current through the move), `next`/`prev` (advance + hand off to player store), `getCurrent`. Plus reactive helpers `useCurrentQueueSong()` and `useUpcomingSongs()`. First-enqueue fast-path: adding to an empty queue starts playing immediately (Spotify behavior).
+    50→   449→- Created `src/app/api/history/route.ts` — `GET` (list user's history newest-first, max 50, includes song via `include: { song: true }`, mapped through `toPublicSong`); `POST` (zod-validates `{ songId }`, verifies song ownership via `findUnique({ where: { id, ownerId: userId } })` before creating the row, returns 201 with the created entry). Both scoped by `getCurrentUserId()`, both `force-dynamic`.
+    51→   450→- Created `src/app/api/history/[id]/route.ts` — `DELETE` with the Next.js 16 async-params signature, scoped `where: { id, userId }`, P2025 → 404 (no existence leakage, matching api-scoping agent's pattern).
+    52→   451→- Created `src/components/music/queue-panel.tsx` — slide-in-from-right panel (Framer Motion `x: "100%" → 0`). Shows "Next up" header with track count + Clear + close. Body is a `@dnd-kit` `DndContext` + `SortableContext` (verticalListSortingStrategy) of upcoming tracks (`queue[currentIndex+1..]`), each row: drag handle (`GripVertical`, only element with `{...attributes} {...listeners}`), `CoverImage`, title/meta, remove button. `PointerSensor` with `distance: 4` activation constraint to separate click from drag. Sortable id = stringified absolute queue index. Empty state with icon + hint. Dark glassmorphism (`bg-[#0a0a0f]/95 backdrop-blur-xl`, `border-white/[0.06]`) matching the existing `.glass-card` aesthetic.
+    53→   452→- Created `src/components/music/queue-button.tsx` — purely presentational. `ListMusic` icon + fuchsia badge with upcoming count (hidden at 0, caps at "99+"). Lights up to fuchsia when `active`. Props: `count`, `active`, `onToggle`.
+    54→   453→- Created `prisma/schema-history.md` — documents the `ListeningHistory` model (`id`, `userId`, `songId`, `playedAt`, `user`/`song` relations with `onDelete: Cascade`, `@@index([userId, playedAt])`) plus the `history ListeningHistory[]` back-relations to add to `User` and `Song`. Does NOT modify `prisma/schema.prisma` — orchestrator merges + runs `bun run db:push`.
+    55→   454→- Ran `bun run lint` — PASS (clean, no errors or warnings in any file).
+    56→   455→
+    57→   456→Stage Summary:
+    58→   457→- Queue store (`src/lib/queue-store.ts`) is fully reactive, integrates with `usePlayerStore` without creating a circular dep (player-store does not import queue-store), and exposes convenience selectors `useCurrentQueueSong()` / `useUpcomingSongs()`.
+    59→   458→- History API (`/api/history` GET/POST + `/api/history/[id]` DELETE) follows the same auth-scoping + zod + P2025→404 conventions as the rest of the API surface; returns public `Song` shapes via `toPublicSong` so the frontend needs no new mapping.
+    60→   459→- Queue UI (`queue-panel.tsx` + `queue-button.tsx`) is ready to drop into the bottom player: replace the placeholder ListMusic button with `<QueueButton count={upcomingCount} active={queueOpen} onToggle={toggleQueue} />` and render `<QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />` alongside `<BottomPlayer/>`.
+    61→   460→- Prisma schema addendum is ready for the orchestrator to merge; the history route files are written against the future schema (lint passes because ESLint doesn't deep-type-check Prisma client field access — `db.listeningHistory` resolves once `db:push` runs).
+    62→   461→- Integration TODOs (for the orchestrator / integrator agent, documented in `agent-ctx/2-A-queue-history.md`): wire the bottom player's `onNext`/`onPrev` to the queue store, swap the placeholder queue button for `<QueueButton>`, mount `<QueuePanel>` somewhere near the player, and POST to `/api/history` when a song starts playing (e.g. an effect watching `usePlayerStore.current?.id`).
+    63→   462→
+    64→   463→---
+    65→   464→Task ID: 2-D
+    66→   465→Agent: playlist-dnd
+    67→   466→Task: Phase 2 — drag-and-drop reorder API + sortable track list component for the playlist view.
+    68→   467→
+    69→   468→Work Log:
+    70→   469→- Read worklog.md to lock the architecture (multi-user NextAuth + Prisma/SQLite, PlaylistSong join with `position`, ownerId scoping on every playlist route) and the existing patterns (getCurrentUserId auth gate, zod body validation, P2025→404, `toPublicSong`/`toPublicPlaylist` mappers).
+    71→   470→- Read existing playlist routes (`/api/playlists/[id]/route.ts` GET/PATCH/DELETE, `/api/playlists/[id]/tracks/route.ts` POST/DELETE) and the existing `TrackList` component + `CoverImage` to match styling + convention (glass-card, fuchsia accents, dark theme, grid row layout, hover play button).
+    72→   471→- Read `prisma/schema.prisma` to confirm `PlaylistSong { id, playlistId, songId, position, addedAt }` with the compound unique `[playlistId, songId]` and index `[playlistId, position]` — that compound unique lets the reorder route update positions by `playlistId_songId` without first looking up the join row's PK.
+    73→   472→- Confirmed `@dnd-kit/core@6.3.1` + `@dnd-kit/sortable@10.0.0` + `@dnd-kit/utilities@3.2.2` are already installed (no `bun add` needed).
+    74→   473→- Created `src/app/api/playlists/[id]/reorder/route.ts` — POST handler:
+    75→   474→  - Auth gate via `getCurrentUserId()` → 401 when no session.
+    76→   475→  - Awaits Promise params (Next 16 convention).
+    77→   476→  - zod schema: `{ orderedSongIds: string[] }` (non-empty array of trimmed non-empty strings).
+    78→   477→  - Rejects duplicate ids in the body up-front (Set check) — a playlist cannot contain the same song twice, so any dup is a client bug.
+    79→   478→  - Loads the playlist scoped `where: { id, ownerId: userId }` → 404 if not owned (no existence leak to other users).
+    80→   479→  - Loads current `PlaylistSong` rows for the playlist (just `songId`), builds a Set, and verifies the body is a *set match*: same length AND every body id is currently in the playlist. Mismatch → 400 with a clear message. This keeps reorder a pure position-rewrite (add/remove still go through `/tracks`).
+    81→   480→  - Rewrites every `position` in a single `db.$transaction` of `playlistSong.update({ where: { playlistId_songId }, data: { position: index } })` calls — atomic, so the playlist is never left half-reordered.
+    82→   481→  - Returns `{ success: true }` 200; catches P2025 (race: track removed between fetch + update) → 404; generic 500 otherwise with server-side `console.error`.
+    83→   482→- Created `src/components/music/sortable-track-list.tsx` — `"use client"` DnD track list:
+    84→   483→  - `DndContext` (closestCenter collision) + `SortableContext` (verticalListSortingStrategy) wrapping a `<ul>` of `SortableTrackRow`s.
+    85→   484→  - Sensors: `PointerSensor` with `activationConstraint: { distance: 6 }` so a click on the handle doesn't accidentally start a drag (and a click on the row plays the song, not starts a drag); `KeyboardSensor` with `sortableKeyboardCoordinates` for full a11y (Space to pick up, arrows to move, Enter/Space to drop).
+    86→   485→  - `useSortable({ id: song.id })` per row; `setActivatorNodeRef` + sortable `attributes`/`listeners` are spread ONLY on the GripVertical drag-handle button — so the rest of the row stays click-to-play.
+    87→   486→  - `transform`/`transition` applied via `CSS.Transform.toString(transform)` so the row follows the cursor while dragging and springs into its new slot on drop; `isDragging` adds a `z-10` lift + fuchsia ring + cursor-grabbing.
+    88→   487→  - `handleDragEnd`: indexes the active+over ids in the current `songs`, `arrayMove`s, and calls `onReorder(next.map(s => s.id))`. NO local state — the parent owns the ordering and re-renders with the new `songs` array after the API call (dnd-kit's transforms handle the in-flight visual reflow).
+    89→   488→  - Row layout: `[drag handle] [#/play] [cover + title + genre·mood] [style on sm+] [duration]` — mirrors the existing `TrackList` UX but with the GripVertical handle prepended.
+    90→   489→  - Play state: reads `current` from `usePlayerStore` (per spec) as a fallback when `currentId` prop is omitted; uses the `isPlaying` prop for the play/pause icon. Click on current row → `store.togglePlay()` (local toggle, no parent round-trip). Click on a new row → `onPlay(song)` (parent wires up `store.playSong` + queue). Double-click anywhere on the row also plays.
+    91→   490→  - Cover via the shared `<CoverImage>` component (renders AI PNG or deterministic gradient fallback, with a 3-bar equalizer overlay when playing).
+    92→   491→  - Wrapped in a `.glass-card rounded-xl` div to match the existing dark-theme panel styling.
+    93→   492→- Lint: `bun run lint` → 0 errors, 0 warnings (clean for the whole project).
+    94→   493→- TypeScript: `npx tsc --noEmit` → 0 errors in my two files. (Pre-existing errors in other agents' files — `examples/websocket`, `skills/image-edit`, `src/app/api/generate`, `src/app/api/history`, `src/components/music/song-card`/`song-detail` — were NOT touched and are out of my ownership.) Fixed one self-caught TS2783 (`aria-roledescription` was specified both by me and by dnd-kit's `attributes` spread) by removing my explicit declaration and adding a comment that dnd-kit already sets role/tabIndex/aria-roledescription/aria-describedby.
+    95→   494→- Dev log confirms the new files compiled cleanly (no errors during HMR); dev server is still serving the existing app on :3000.
+    96→   495→
+    97→   496→Stage Summary:
+    98→   497→- Files created (owned, no overlap with other agents):
+    99→   498→  - `src/app/api/playlists/[id]/reorder/route.ts` — POST reorder endpoint (auth + ownership + set-match validation + atomic transactional position rewrite).
+   100→   499→  - `src/components/music/sortable-track-list.tsx` — dnd-kit-powered sortable track list with GripVertical handle, drag activator isolation, keyboard a11y, glass-card styling, store-backed play state.
+   101→   500→- API contract: `POST /api/playlists/[id]/reorder { orderedSongIds: string[] }` → 200 `{ success: true }` | 400 (bad body / set mismatch / dup id) | 401 (no session) | 404 (playlist not found / not owned) | 500.
+   102→   501→- The parent playlist view should pass the playlist's `songs` (already in order) into `<SortableTrackList songs={…} onReorder={async ids => { await fetch(`/api/playlists/${id}/reorder`, { method:'POST', body: JSON.stringify({ orderedSongIds: ids }) }); }} onPlay={…} currentId={currentSong?.id} isPlaying={isPlaying} />`. After the API resolves, the parent refetches (or optimistically reorders its local `songs` array) and the component re-renders with the new order.
+   103→   502→- No existing files modified. No schema changes (the `PlaylistSong.position` field already existed from Task 9).
+   104→   503→- Lint + TypeScript both clean for my files. Did NOT start/stop the dev server.
+   105→   504→
+   106→   505→---
+   107→   506→Task ID: 3-C
+   108→   507→Agent: discover-trending
+   109→   508→Task: Phase 3 of SpotiBot — create a public Discover feed + Trending carousel: a no-auth-required feed of all public tracks across all users, plus trending (most liked this week).
+   110→   509→
+   111→   510→Work Log:
+   112→   511→- Read worklog.md to lock the architecture (NextAuth + Prisma/SQLite, ownerId scoping on every protected route, `toPublicSong` mapper that already omits `ownerId` from the public `Song` shape, `usePlayerStore.playSong(song)` toggles play/pause when called on the current track).
+   113→   512→- Read `src/lib/types.ts` (Song/GENRES/MOODS), `src/lib/song-mapper.ts` (toPublicSong — confirms ownerId is NOT in the public shape, so the discover/trending responses leak no user info by construction), `src/lib/session.ts`, `src/lib/db.ts`, `src/lib/player-store.ts`, `prisma/schema.prisma` (Song model — no `isPublic` field yet), existing API routes (`/api/songs`, `/api/browse`, `/api/history`) for the auth-scoping + zod + P2025→404 + `force-dynamic` conventions, and `src/components/music/{cover-image,track-list,song-card,browse-view,bottom-player}.tsx` for the dark-theme + fuchsia-accent + CoverImage API conventions.
+   114→   513→- Created `prisma/schema-discover.md` — documents the new `isPublic Boolean @default(false)` field on `Song` plus the suggested `@@index([isPublic, createdAt])` index for the discover/trending queries. Does NOT modify `prisma/schema.prisma` (same convention as `schema-history.md` — orchestrator merges + runs `bun run db:push`). Also documents the orchestrator follow-ups required for the feed to be playable end-to-end: relax `/api/audio/[id]` + `/api/cover/[id]` to allow streaming/viewing public tracks (`OR: [{ ownerId: userId }, { isPublic: true }]`), extend `PATCH /api/songs/[id]` to accept `{ isPublic?: boolean }`, and notes the `liked` column on the public `Song` shape reflects the OWNER's like state (the discover view intentionally doesn't render a like button, so the value is harmless).
+   115→   514→- Created `src/app/api/discover/route.ts` — PUBLIC (no auth) `GET /api/discover?page=1&limit=20`:
+   116→   515→  - `force-dynamic`.
+   117→   516→  - Reads `page` (default 1, min 1) + `limit` (default 20, min 1, max 100) from `URL.searchParams`. Validates both as positive integers (limit capped at 100) → 400 on bad input.
+   118→   517→  - `Promise.all` of `db.song.findMany({ where: { isPublic: true }, orderBy: { createdAt: "desc" }, skip: (page-1)*limit, take: limit })` + `db.song.count({ where: { isPublic: true } })` so the UI gets the page + total in one round-trip.
+   119→   518→  - Maps rows through `toPublicSong` (ownerId already omitted by the mapper → privacy preserved).
+   120→   519→  - 200: `{ songs: Song[], total: number, page: number, limit: number }`. 500: generic `{ error: "Failed to load discover feed." }` + server-side `console.error`.
+   121→   520→  - Exports `DiscoverResponse` interface.
+   122→   521→- Created `src/app/api/trending/route.ts` — PUBLIC `GET /api/trending?limit=20`:
+   123→   522→  - `force-dynamic`. Validates `limit` (default 20, min 1, max 100) → 400 on bad input.
+   124→   523→  - Approximation of "trending" (no Likes table yet — `liked` is a boolean on `Song`): `where: { isPublic: true, liked: true, createdAt: { gt: now - 7 days } }, orderBy: { createdAt: "desc" }, take: limit`. Cutoff = `new Date(Date.now() - 7*24*60*60*1000)`.
+   125→   524→  - 200: `{ songs: Song[] }` (no ownerId). 500: generic `{ error: "Failed to load trending tracks." }`.
+   126→   525→  - Exports `TrendingResponse` interface + `TRENDING_WINDOW_DAYS = 7` constant.
+   127→   526→- Created `src/components/music/discover-view.tsx` — `'use client'` Discover page:
+   128→   527→  - Props: `{ onPlay: (song: Song) => void }`.
+   129→   528→  - Three sections: Header (Compass icon + "Discover"), Trending carousel, Discover feed grid.
+   130→   529→  - **Trending carousel**: fetches `/api/trending?limit=20` once on mount. Horizontal scroller (`overflow-x-auto snap-x snap-mandatory`) of `TrendingCard`s (`w-[260px]` each, snap-start). Each card = square `CoverImage` (reuses the shared `./cover-image` component — never imports the broken `CoverArt` from `bottom-player`) + title (truncate) + `genre · mood` + hover overlay with fuchsia Play/Pause button. Prev/next ChevronLeft/Right arrow buttons on sm+ with `canPrev`/`canNext` state derived from `onScroll` (`scrollLeft`/`scrollWidth` checks) — hidden on touch. Skeleton row (6 placeholders) while loading; orange Flame empty state; rose ErrorBanner on failure.
+   131→   530→  - **Discover feed**: infinite-scroll grid (`grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5`). `DiscoverCard` = same shape as TrendingCard but fluid width; card is `role="button" tabIndex=0` with Enter/Space keydown; inner Play button calls `e.stopPropagation()` then `onPlay(song)` to avoid double-fire. Player state via `usePlayerStore((s) => s.current)` + `usePlayerStore((s) => s.isPlaying)` for the equalizer overlay + play/pause icon toggle + fuchsia ring on the currently-playing card.
+   132→   531→  - **Infinite scroll**: state `songs/page/total/loading/loadingMore/error`. Mount effect fetches page 1; `[page]` effect (page > 1) appends with `Set`-based de-dup (in case order shifted between fetches). `IntersectionObserver` on a sentinel `<div>` with `{ rootMargin: "0px 0px 600px 0px", threshold: 0 }` (start loading 600px before visible). Callback guards `if (loading || loadingMore || !hasMore) return;` then `setPage(p => p+1)`. `typeof IntersectionObserver === "undefined"` guard for SSR. Bottom status row: `Loader2` spinner + "Loading more…" / "You've reached the end of the feed." / rose error message.
+   133→   532→  - Framer Motion `motion.div` + `AnimatePresence` for card enter/exit. Dark theme, fuchsia/rose accents, no indigo/blue.
+   134→   533→  - All `useEffect` cleanups use a `cancelled` flag for stale-write protection.
+   135→   534→- Lint: `cd /home/z/my-project && bun run lint` → CLEAN for my 3 source files + the schema doc. The 3 remaining lint problems are in `src/app/api/feed/route.ts` (unused eslint-disable — not mine) and `src/components/music/share-dialog.tsx` (react-hooks/set-state-in-effect — not mine). I did not touch either file.
+   136→   535→- TypeScript (informational): `npx tsc --noEmit` reports 3 expected errors in my API routes — `'isPublic' does not exist in type 'SongWhereInput'` — because the routes are written against the FUTURE schema (after the orchestrator merges `schema-discover.md` + runs `db:push`). Same pattern as Task 2-A's `ListeningHistory`. ESLint doesn't deep-type-check Prisma client field access, so `bun run lint` passes. `discover-view.tsx` has ZERO TS errors.
+   137→   536→- Wrote `/agent-ctx/3-C-discover-trending.md` work record.
+   138→   537→- Did NOT modify any other file. No existing API route, component, schema, or page.tsx touched.
+   139→   538→
+   140→   539→Stage Summary:
+   141→   540→- Files created (owned, no overlap):
+   142→   541→  - `prisma/schema-discover.md` — documents `Song.isPublic Boolean @default(false)` + `@@index([isPublic, createdAt])` + orchestrator follow-ups.
+   143→   542→  - `src/app/api/discover/route.ts` — PUBLIC `GET /api/discover?page=1&limit=20` → `{ songs, total, page, limit }`.
+   144→   543→  - `src/app/api/trending/route.ts` — PUBLIC `GET /api/trending?limit=20` → `{ songs }` (most-liked public tracks from last 7 days).
+   145→   544→  - `src/components/music/discover-view.tsx` — Discover page (Trending horizontal carousel + infinite-scroll grid).
+   146→   545→- Both endpoints are PUBLIC (no auth gate) and use `toPublicSong` which omits `ownerId` — zero user information exposed.
+   147→   546→- `discover-view.tsx` is ready to drop into `page.tsx`: render `<DiscoverView onPlay={(song) => usePlayerStore.getState().playSong(song)} />` when `view === "discover"`. The sidebar already imports the `Compass` icon (currently unused), so adding a `"discover"` entry to `SidebarView` is the natural integration point.
+   148→   547→- Orchestrator follow-ups documented in `schema-discover.md`: (1) merge `isPublic` into the Song model + `db:push`; (2) relax `/api/audio/[id]` + `/api/cover/[id]` to allow streaming/viewing public tracks so clicking a foreign track in Discover actually plays; (3) extend `PATCH /api/songs/[id]` to accept `{ isPublic?: boolean }` so owners can publish; (4) wire `<DiscoverView/>` into `page.tsx` + add `"discover"` to `SidebarView`.
+   149→   548→- Lint: `bun run lint` passes clean for my files. TS errors in my API routes are expected (future-schema pattern) and disappear after `db:push`.
+   150→   549→
+   151→   550→---
+   152→   551→Task ID: 3-D
+   153→   552→Agent: follow-system
+   154→   553→Task: Phase 3 — build the follow system (users follow other users + a following feed of tracks from followed creators).
+   155→   554→
+   156→   555→Work Log:
+   157→   556→- Read worklog.md (full architecture, API contract, file ownership, auth-scoping convention, prior Task 2-A pattern of writing routes against a not-yet-merged schema addendum) and `src/lib/types.ts`, `src/lib/session.ts`, `src/lib/db.ts`, `src/lib/song-mapper.ts`, `src/lib/auth.ts`, `prisma/schema.prisma`, and the existing API routes (songs, browse, history, playlists/[id]/reorder) to lock the auth + response + error-handling patterns.
+   158→   557→- Read `src/components/music/cover-image.tsx`, `song-card.tsx`, `track-list.tsx`, `browse-view.tsx`, `empty-state.tsx`, `equalizer-bars.tsx`, `top-bar.tsx`, `src/lib/player-store.ts`, `src/components/session-provider.tsx`, `src/hooks/use-toast.ts`, `src/components/ui/button.tsx` for UI conventions (glass-card aesthetic, fuchsia/rose accents, deterministic-hue covers, shadcn `useToast` routing to the mounted `<Toaster/>`, store-driven play state).
+   159→   558→- Created `prisma/schema-follow.md` — documents the `Follow` join model (`id`, `followerId`, `followingId`, `createdAt`, `follower`/`following` relations with `onDelete: Cascade`, `@@unique([followerId, followingId])` + `@@index` on both FKs), the two `User` back-relations (`followers`/`following` with the matching relation names), and orchestrator action items for the two schema gaps the spec assumes: (1) `username` doesn't exist on `User` yet (returned as `null`), (2) `isPublic` doesn't exist on `Song` yet (feed route filters by `ownerId IN followedIds` only). Suggested schema additions are included.
+   160→   559→- Created `src/app/api/follow/route.ts` — `GET` (list users I follow, newest first, returns `{ following: [{ id, name, username: null, image }] }`) + `POST { followingId }` (auth required, can't follow yourself → 400, target user must exist → 404 verified before insert, idempotent on P2002 by returning the existing row with 200, P2003 race → 404). `force-dynamic`. zod body validation. Server-side `console.error` + generic 500 (no stack leak).
+   161→   560→- Created `src/app/api/follow/[userId]/route.ts` — `GET` (check if I follow this user → `{ following: boolean }`, single indexed point-read on the compound-unique key, no existence leak) + `DELETE` (unfollow, idempotent via `deleteMany` so a no-row delete doesn't throw P2025). `force-dynamic`. Next 16 async-params signature (`params: Promise<{ userId: string }>`).
+   162→   561→- Created `src/app/api/feed/route.ts` — `GET /api/feed?page=1&limit=20` (auth required). Resolves followed user ids via `db.follow.findMany({ where: { followerId: userId } })`; empty short-circuit returns an empty envelope without firing the song query. Otherwise fires `db.song.count` + `db.song.findMany` in parallel (`Promise.all` — no N+1), `where: { ownerId: { in: followedIds } }` ordered by `createdAt desc`, paginated via `skip`/`take`. Each row's nested `owner` is attached to the response as `ownerId`/`ownerName`/`ownerImage` on top of the public `Song` shape (base type stays untouched). Returns `{ songs, total, page, limit, hasMore }`. `page` clamped to ≥1, `limit` clamped to 1..50. `force-dynamic`. Documented the `isPublic` gap with an inline comment + in `schema-follow.md`.
+   163→   562→- Created `src/components/music/follow-button.tsx` — `"use client"` optimistic Follow/Following/Unfollow toggle. Visual states: not-following → fuchsia→rose gradient pill; following → subtle dark pill; following + hover/focus → rose-tinted "Unfollow" pill. Hides itself when `status === "loading"`, when not signed in, or when `meId === userId` (can't follow yourself). Reads `meId` from `useSession` (id is embedded in the JWT via the `jwt`/`session` callbacks in `src/lib/auth.ts`). On click: flips state optimistically, fires `POST /api/follow` or `DELETE /api/follow/[userId]`, rolls back + shows a destructive toast on error (via the existing `useToast` hook). `aria-pressed` reflects the optimistic state; `aria-label` describes the current + hovered action. Focus-visible fuchsia ring on every state. Keyboard-accessible.
+   164→   563→- Created `src/components/music/feed-view.tsx` — `"use client"` following feed. Header (Users2 icon + "Following Feed" + track count), initial-load skeleton (6 rows matching the row layout), rose-tinted error alert, and per-spec empty state ("You're not following anyone yet. Browse the discover feed to find creators.") with a "Try the Browse tab" hint chip. Each row: `[index/play] [cover] [title + "by [owner name]"] [genre · mood] [explicit play button]`. Current track highlighted via `usePlayerStore`; clicking the current track toggles `store.togglePlay()`, clicking a new track calls `onPlay(song)`. Cover via the shared `<CoverImage>` component (AI PNG or deterministic gradient fallback). Owner name falls back to "Unknown creator" when null. Pagination via a "Load more tracks" button (appends the next page; no infinite scroll for a11y). `FeedSong` type mirrors the server's `FeedSong` (Song + owner display fields) locally so the client bundle doesn't import the server-only route file.
+   165→   564→- Ran `bun run lint` — initial pass surfaced 1 warning in my files (an unused `eslint-disable-next-line @typescript-eslint/no-unused-vars` directive in `feed/route.ts` where the destructured `owner` is actually used). Removed the directive; re-ran lint → ALL 6 of my files clean (0 errors, 0 warnings). The 2 remaining project-wide errors are in `src/components/music/share-dialog.tsx` (not my file; `react-hooks/set-state-in-effect`).
+   166→   565→- `npx tsc --noEmit` reports 6 errors, ALL of which are `Property 'follow' does not exist on type 'PrismaClient'` — i.e. the `Follow` model isn't merged into `prisma/schema.prisma` yet. This matches the documented Task 2-A pattern: the schema addendum lives in `prisma/schema-follow.md`, and the orchestrator merges + runs `bun run db:push` to regenerate the Prisma client. ESLint passes because it doesn't deep-type-check Prisma client field access; `db.follow` resolves once `db:push` runs.
+   167→   566→- Did NOT modify any other agent's files (no schema.prisma, no types.ts, no other API routes, no other components, no layout, no globals.css, no lib/ai). Did NOT start/stop the dev server.
+   168→   567→- Wrote `/agent-ctx/3-D-follow-system.md` work record.
+   169→   568→
+   170→   569→Stage Summary:
+   171→   570→- Files created (owned, no overlap):
+   172→   571→  - `prisma/schema-follow.md` — schema addendum + orchestrator action items.
+   173→   572→  - `src/app/api/follow/route.ts` — POST follow + GET list (auth-scoped, idempotent, P2002/P2003 mapped).
+   174→   573→  - `src/app/api/follow/[userId]/route.ts` — DELETE unfollow + GET check (idempotent, no existence leak).
+   175→   574→  - `src/app/api/feed/route.ts` — GET following feed (paginated, parallel count+page query, owner metadata attached).
+   176→   575→  - `src/components/music/follow-button.tsx` — optimistic Follow/Following/Unfollow pill (Spotify-style hover-swap).
+   177→   576→  - `src/components/music/feed-view.tsx` — feed list with cover + title + "by [owner]" + genre/mood + play button + per-spec empty state + "Load more".
+   178→   577→- API contract implemented exactly per spec; auth-scoped throughout (every handler calls `getCurrentUserId` and 401s when absent); no existence leakage; idempotent follow/unfollow; pagination enforced with clamps.
+   179→   578→- Schema gaps surfaced and documented for the orchestrator: `username` on User (currently `null` in the GET response), `isPublic` on Song (currently filtered by `ownerId IN followedIds` only). Suggested Prisma additions are in `schema-follow.md`.
+   180→   579→- Lint: `bun run lint` passes clean for ALL 6 owned files. TypeScript errors in the route files (`db.follow` not found) will clear once the orchestrator merges `schema-follow.md` into `prisma/schema.prisma` and runs `bun run db:push`.
+   181→   580→- Integration TODOs (for the orchestrator): (1) merge the schema addendum + `bun run db:push`; (2) mount `<FollowButton userId={…} initialFollowing={…} />` wherever a creator's profile/card is rendered (e.g. in `FeedView` rows next to the owner name, on a future user-profile view); (3) mount `<FeedView onPlay={(song) => usePlayerStore.getState().playSong(song)} />` as a new sidebar view ("Following") — the `onPlay` callback should hand the song to the shared player store.
+   182→   581→
+   183→   582→---
+   184→   583→Task ID: 3-B
+   185→   584→Agent: share-embed
+   186→   585→Task: Phase 3 of SpotiBot — create public track sharing: a PUBLIC (no-auth) read API for a single track's metadata + audio + cover, a share modal (link copy + social + embed code), and a standalone player component for the `/track/[id]` share page.
+   187→   586→
+   188→   587→Work Log:
+   189→   588→- Read worklog.md (full architecture: NextAuth + Prisma/SQLite, ownerId scoping on every protected route, `toPublicSong` mapper, `usePlayerStore` singleton with a single registered `<audio>` element, file-ownership contract) + the existing `/api/audio/[id]` + `/api/cover/[id]` routes (to mirror their byte-streaming + Content-Disposition + Cache-Control + `mimeForFormat`/`slugifyTitle` patterns) + `src/lib/song-mapper.ts` (to confirm which fields the public `Song` shape already omits) + `src/lib/types.ts` (Song interface) + `src/lib/player-store.ts` (the `playSong`/`loadSong`/`togglePlay`/`seek`/`registerAudio` API + the `Song`-typed action signatures) + `src/components/music/{cover-image,bottom-player,create-playlist-dialog,song-card,song-detail}.tsx` + `src/components/ui/{dialog,input,textarea,button,badge,slider}.tsx` (shadcn primitive APIs + the dark-theme + fuchsia-accent + glass-card aesthetic) + `prisma/schema.prisma` (Song model fields, including `coverData Bytes?`, `audioFormat`, `coverFormat`).
+   190→   589→- Created `src/app/api/track/[id]/route.ts` — `GET` PUBLIC (no auth) single-track metadata:
+   191→   590→  - `export const dynamic = "force-dynamic"` (matches the existing API convention).
+   192→   591→  - Uses Prisma `select` to fetch ONLY `{ id, title, lyrics, genre, mood, style, durationMs, coverData, createdAt }` — so a future schema addition can't accidentally leak through this route. No `ownerId`, no `prompt`, no `voice`, no `liked`, no `seed`, no `bpm`, no `keyScale`, no `timeSignature`, no `audioFormat`.
+   193→   592→  - 200: `PublicTrack` JSON (`{ id, title, lyrics, genre, mood, style, audioUrl: "/api/track/{id}/audio", coverUrl: "/api/track/{id}/cover" | null, durationMs, createdAt }`) with `Cache-Control: public, max-age=300, s-maxage=600`.
+   194→   593→  - 404: `{ error: "Track not found" }`. 500: generic `{ error: "Failed to load track." }` + server-side `console.error` (no stack leak).
+   195→   594→  - Exports the `PublicTrack` interface (imported via `import type` by `track-embed.tsx`).
+   196→   595→  - Privacy model: the cuid track id (~4.5e31 possibilities) IS the share secret. There is no separate "public" flag on the Song row.
+   197→   596→- Created `src/app/api/track/[id]/audio/route.ts` — `GET` PUBLIC audio stream:
+   198→   597→  - Mirrors the auth-protected `/api/audio/[id]` route's byte-streaming pattern but drops the `getCurrentUserId` gate + `ownerId` scoping. `select: { title, audioData, audioFormat }` only.
+   199→   598→  - Local `slugifyTitle()` + `mimeForFormat()` helpers (duplicated from the auth route to keep this file self-contained within my ownership set — same convention the auth route already follows).
+   200→   599→  - Headers on 200: `Content-Type` (derived from `audioFormat` via `mimeForFormat`), `Content-Length`, `Content-Disposition: inline; filename="<slug>.<ext>"`, `Cache-Control: public, max-age=3600, immutable`.
+   201→   600→  - 404 if track missing. 500 + server-side `console.error` on exception.
+   202→   601→- Created `src/app/api/track/[id]/cover/route.ts` — `GET` PUBLIC cover image stream:
+   203→   602→  - Mirrors `/api/cover/[id]` but auth-free. `select: { coverData }` only. 404 when the track or its cover is missing (the player renders a gradient fallback).
+   204→   603→  - Headers on 200: `Content-Type: image/png`, `Content-Length`, `Cache-Control: public, max-age=86400, immutable`.
+   205→   604→- Created `src/components/music/share-dialog.tsx` — `'use client'` share modal:
+   206→   605→  - Props exactly per spec: `{ trackId, trackTitle, open, onOpenChange }`.
+   207→   606→  - **Share link**: readonly shadcn `<Input>` showing `{origin}/track/{trackId}` + a gradient "Copy" button (`navigator.clipboard.writeText` with a legacy `document.execCommand("copy")` fallback for non-secure HTTP contexts). On success the button turns emerald with a `Check` icon for 2.2s, then reverts. On failure, a rose error message appears.
+   208→   607→  - **Social buttons**: 3-column grid of `Twitter` (X), `Facebook`, `MessageCircle` (WhatsApp) lucide icons. Each calls `window.open(url, "share-dialog", "width=600,height=600,…centered…")`. URLs: X intent (`twitter.com/intent/tweet?text=…&url=…`), Facebook sharer (`facebook.com/sharer/sharer.php?u=…`), WhatsApp deep link (`wa.me/?text=…`).
+   209→   608→  - **Embed code**: readonly shadcn `<Textarea>` (4 rows, monospace) pre-filled with `<iframe src="{ORIGIN}/track/{ID}" width="100%" height="380" frameborder="0" allow="autoplay; encrypted-media" loading="lazy" title="{TITLE}"></iframe>` + a "Copy embed" link button.
+   210→   609→  - SSR-safe `origin`: read via `useSyncExternalStore(() => () => {}, () => window.location.origin, () => "")` — no `setState`-in-effect (avoids the `react-hooks/set-state-in-effect` lint error the prior 3-D agent noted in my file BEFORE I fixed it), no-op subscribe is correct because origin never changes during a page session.
+   211→   610→  - Copy/social state lives in a `ShareDialogBody` child component rendered inside Radix `DialogContent`. Radix unmounts `DialogContent` when the dialog closes, so the body remounts on each open — naturally resetting the "Copied!" flags WITHOUT an effect (also avoids the lint error). This is the React-recommended pattern (derive/reset via `key` or remount, not via effect).
+   212→   611→  - Uses shadcn `Dialog`, `Input`, `Textarea`, `Button` primitives. Accent palette: fuchsia→purple→rose gradient + emerald success — no indigo/blue.
+   213→   612→- Created `src/components/music/track-embed.tsx` — `'use client'` standalone player:
+   214→   613→  - Props: `{ track: PublicTrack }` (imported via `import type` from the route file — type-only import → no server code leaks into the client bundle).
+   215→   614→  - Full-screen centered layout (`min-h-screen flex items-center justify-center bg-[#050507] px-4 py-10`) with a glass card (`max-w-md rounded-3xl p-6 sm:p-8 shadow-2xl`).
+   216→   615→  - Large 320px square `CoverImage` (reuses the shared `./cover-image` component — handles AI PNG + gradient fallback + equalizer overlay when playing; never imports the broken `CoverArt` from `bottom-player`).
+   217→   616→  - Track title (`truncate text-xl sm:text-2xl font-bold`) + Genre/Mood/Style badges (shadcn `Badge`, filtered to non-empty values).
+   218→   617→  - Seek bar: shadcn `Slider` with `mm:ss` time labels on both sides, bound to the player store's `currentTime`/`duration`/`beginSeek`/`endSeek` — same pattern as `BottomPlayer`.
+   219→   618→  - Large 64px play/pause button (fuchsia→purple→rose gradient) centered.
+   220→   619→  - Action row: Download (`<a download>` pointing at `track.audioUrl`) + Share (opens `<ShareDialog>`).
+   221→   620→  - Collapsible Lyrics section (collapsed by default; only renders if `track.lyrics` is non-empty) — keeps the layout minimal per spec while still surfacing the lyrics data that `PublicTrack` carries. Gradient left-accent bar matching the `LyricsPanel` aesthetic.
+   222→   621→  - **Player store integration** (per spec: "Uses the player store"): creates its own `<audio>` element (ref) and registers it via `registerAudio()` on mount (cleanup: `registerAudio(null)` on unmount) — same pattern as `BottomPlayer`. Necessary because the share page has no `BottomPlayer`, so the store would otherwise have no audio element to drive. Wires the audio element's events (`timeupdate`/`durationchange`/`loadedmetadata`/`play`/`pause`/`ended`) to the store's event setters. On mount + whenever `track.id` changes, calls `loadSong(song)` to set `current` + `audio.src` WITHOUT auto-playing (browsers block autoplay-with-sound). Play button: `togglePlay()` if `current?.id === track.id`, else `playSong(song)`.
+   223→   622→  - `publicTrackToSong(track)` adapts `PublicTrack` → `Song` by filling the player-store-only fields (`prompt: ""`, `voice: ""`, `audioFormat: "mp3"`, `liked: false`, `bpm`/`keyScale`/`timeSignature`/`seed: null`) with inert defaults. None of these are read during playback; they exist only for type compatibility with the store's `Song`-typed actions. Memoized per `track` so the store sees a stable reference.
+   224→   623→- Ran `bun run lint` → initial pass surfaced 2 errors in `share-dialog.tsx` (`react-hooks/set-state-in-effect` on the `setOrigin(window.location.origin)` effect + the reset-on-open effect). Refactored: (1) replaced the `origin` effect with `useSyncExternalStore`, (2) moved the copy/social state into a `ShareDialogBody` child rendered inside `DialogContent` so Radix's unmount-on-close resets the state naturally (no effect needed). Re-ran lint → **0 errors in all 5 of my files**. The 2 remaining project-wide warnings are in `src/components/music/profile-view.tsx` (unused eslint-disable directives — not my file, not touched).
+   225→   624→- `npx tsc --noEmit` → **0 errors in all 5 of my files**. (Many pre-existing errors in other agents' files — `feed`, `follow`, `profile`, `trending`, `generate`, `layout`, `song-card`, `song-detail`, `top-bar` — none touched. Most are the `db.follow`/`isPublic`/`username` not-yet-merged-schema errors from Tasks 3-C + 3-D, plus a `CoverArt` named-export mismatch in `song-card`/`song-detail` and a `ThemeToggle` mismatch in `top-bar`.)
+   226→   625→- Dev log shows `✓ Compiled` with no errors attributed to my files; the only compile error in the log is the pre-existing `ThemeToggle` named-export mismatch in `top-bar.tsx` (another agent's file).
+   227→   626→- Wrote `/agent-ctx/3-B-share-embed.md` work record.
+   228→   627→- Did NOT modify any other agent's files (no schema.prisma, no types.ts, no other API routes, no other components, no layout, no globals.css, no middleware, no lib/). Did NOT start/stop the dev server.
+   229→   628→
+   230→   629→Stage Summary:
+   231→   630→- Files created (owned, no overlap):
+   232→   631→  - `src/app/api/track/[id]/route.ts` — `GET` PUBLIC `PublicTrack` JSON (no owner info, no auth).
+   233→   632→  - `src/app/api/track/[id]/audio/route.ts` — `GET` PUBLIC audio byte stream (no auth).
+   234→   633→  - `src/app/api/track/[id]/cover/route.ts` — `GET` PUBLIC cover PNG byte stream (no auth).
+   235→   634→  - `src/components/music/share-dialog.tsx` — share modal (link copy + X/Facebook/WhatsApp + embed code).
+   236→   635→  - `src/components/music/track-embed.tsx` — standalone player for `/track/[id]` (cover + title + badges + seek + play/pause + download + share + collapsible lyrics).
+   237→   636→- API contract: `GET /api/track/[id]` → 200 `PublicTrack` | 404 | 500. `GET /api/track/[id]/audio` → 200 `audio/{format}` | 404 | 500. `GET /api/track/[id]/cover` → 200 `image/png` | 404 | 500. All three are PUBLIC (no `getCurrentUserId` call) — privacy relies on the unguessability of the cuid track id (the share secret).
+   238→   637→- `<ShareDialog>` is self-contained and ready to drop in anywhere a Share button is needed (props: `trackId`, `trackTitle`, `open`, `onOpenChange`).
+   239→   638→- `<TrackEmbed>` is self-contained and ready to drop into `src/app/track/[id]/page.tsx` — just fetch `GET /api/track/${id}` and render `<TrackEmbed track={track} />` (or render a "Track not found" page on 404).
+   240→   639→- Integration TODOs (for the orchestrator):
+   241→   640→  1. Create `src/app/track/[id]/page.tsx` (Server Component) — fetch `GET /api/track/${id}`, render `<TrackEmbed track={track} />` on 200, "Track not found" on 404, set `<title>{track.title} — SpotiBot</title>` via metadata.
+   242→   641→  2. Whitelist `/track` + `/api/track` in the auth middleware (`src/middleware.ts`) — the current matcher protects everything except `signin`/`api/auth`/static. Add `track` and `api/track` to the negative lookahead so logged-out visitors can reach the share page + the public stream endpoints.
+   243→   642→  3. (Optional) Wire a Share button into the main app (e.g., in `song-card.tsx`, `song-detail.tsx`, or `bottom-player.tsx`) that opens `<ShareDialog>` with the current track's id + title.
+   244→   643→- Lint: `bun run lint` passes clean for ALL 5 owned files. TypeScript: `npx tsc --noEmit` reports 0 errors in my 5 files.
+   245→   644→
+   246→   645→---
+   247→   646→Task ID: 3-A
+   248→   647→Agent: public-profiles
+   249→   648→Task: Phase 3 of SpotiBot — public user profiles. Each user gets a public page `/u/[username]` showing their public tracks + playlists, plus an authenticated edit flow.
+   250→   649→
+   251→   650→Work Log:
+   252→   651→- Read worklog.md (architecture + file ownership), src/lib/session.ts (`getCurrentUserId` / `getCurrentUser`), src/lib/song-mapper.ts (`toPublicSong`), src/lib/playlist-mapper.ts, src/lib/types.ts, src/lib/auth.ts (NextAuth + JWT callback exposing `user.id`), prisma/schema.prisma (User model — currently no `username` / `bio`), and existing API routes (`/api/playlists`, `/api/playlists/[id]`, `/api/songs/[id]`) to lock the auth-scoping + zod + P2025→404 + toPublicSong patterns.
+   253→   652→- Read existing UI components (`cover-image.tsx`, `track-list.tsx`, `song-card.tsx`, `create-playlist-dialog.tsx`) to match the dark glassmorphism styling, fuchsia accent palette, CoverImage reuse, player-store integration, and Dialog form patterns.
+   254→   653→- Created `prisma/schema-profile.md` — documents the two new `User` fields (`username String? @unique`, `bio String?`) for the orchestrator to merge + run `bun run db:push`. Includes field rationale, the validation rules enforced at the API layer (not at the DB layer), and the integration note that the Prisma client must be regenerated before the new routes type-check.
+   255→   654→- Created `src/app/api/profile/[username]/route.ts` (PUBLIC `GET`):
+   256→   655→  - No auth required — anyone can view any public profile.
+   257→   656→  - Path param is `lowercased + trimmed` before lookup; `findUnique({ where: { username } })` hits the unique index (added by `@unique` once schema is pushed).
+   258→   657→  - Returns 404 on unknown username / empty username.
+   259→   658→  - Parallel `Promise.all` of `db.song.findMany` (newest-first, take 50, mapped via `toPublicSong` — audio bytes never leak) + `db.playlist.findMany` (newest-first, take 50, `include: { items: { select: { id: true } } }` so `trackCount = items.length` is cheap — no nested song payloads).
+   260→   659→  - Playlists returned as a slim summary per spec: `{ id, name, trackCount, createdAt }` only (no song listings, no duration).
+   261→   660→  - Exports the canonical `PublicProfileUser` / `PublicPlaylistSummary` / `PublicProfileResponse` types.
+   262→   661→- Created `src/app/api/profile/me/route.ts` (auth-required `GET` + `PATCH`):
+   263→   662→  - `GET` returns the current user's full profile (same shape as the public endpoint) so the parent route can render the same `<ProfileView/>` for both own and others' profiles.
+   264→   663→  - `PATCH` updates `name` / `bio` / `username` — zod-validated; username validator is `^[a-z0-9]+(?:-[a-z0-9]+)*$` + `.min(3).max(20)` (enforces lowercase, alphanumeric + single hyphens, must start/end alphanumeric, no consecutive hyphens — all from one regex + length bounds).
+   265→   664→  - Username uniqueness: pre-flight `findUnique({ where: { username } })` returns 400 "Username is already taken." if a different user owns it; plus catch Prisma `P2002` on the update as a race-condition safety net (same message).
+   266→   665→  - Only changed fields are written (compares against pre-edit values); `bio: null` is supported to explicitly clear the bio.
+   267→   666→  - Response shapes documented in the file header. All errors return `{ error: string }` with the appropriate status code.
+   268→   667→- Created `src/components/music/profile-view.tsx` (`"use client"`):
+   269→   668→  - Self-contained: fetches `/api/profile/[username]` on mount + when the `username` prop changes; loading skeleton; 404 / error empty state.
+   270→   669→  - Glassmorphism header: large avatar (image when set, else deterministic gradient + initials from name/username), display name, `@username`, bio, "Member since MMM yyyy" date, decorative radial-gradient halo. Edit-Profile button (top-right) shown only when `isOwnProfile`.
+   271→   670→  - Tracks section: responsive grid (`grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5`) reusing `<CoverImage/>` + title + genre·mood; hover-play overlay wired to the shared `usePlayerStore` (same architecture as the existing `SongCard` — clicking play loads into the bottom player). Currently-playing card highlights in fuchsia.
+   272→   671→  - Playlists section: list of rows with deterministic-gradient cover (hue from `hueFromString(playlist.id)` — same hashing scheme as `cover-image.tsx`), name, "Playlist · N tracks · MMM yyyy". Clickable when `onOpenPlaylist` is provided (parent decides navigation).
+   273→   672→  - Empty states: distinct copy for own-profile ("Generate your first track…") vs. other-user ("This user hasn't generated any tracks yet.").
+   274→   673→  - Edit Profile dialog (embedded): fields for username (with `@` prefix + auto-lowercase + invalid-char filtering), name (max 80), bio (textarea + 200-char counter). Client-side validation mirrors the server's zod schema. Only sends changed fields. On success: optimistically patches local state, fires a toast, closes the dialog, and calls optional `onProfileUpdated(updated)` so the parent can redirect on a username change.
+   275→   674→  - Accessibility: every icon-only button has `aria-label`; form fields have associated `<Label>`s; the dialog error is `role="alert"`; section headings use semantic `<section aria-label>`; loading skeleton sets `aria-busy="true"`. Mobile-first responsive (header stacks vertically on mobile).
+   276→   675→  - Types duplicated locally (mirroring the API route exports) rather than cross-imported from a sibling route file — avoids any Next.js route-bundler quirks. Documented in a header comment.
+   277→   676→- Ran `cd /home/z/my-project && bun run lint` → EXIT 0, no errors/warnings anywhere in the project. (Initial run flagged 2 unused `eslint-disable` directives in my profile-view.tsx — removed both. Also surfaced pre-existing errors in `share-dialog.tsx` from another agent's WIP that resolved themselves on the next run.)
+   278→   677→
+   279→   678→Stage Summary:
+   280→   679→- Files created (owned, no overlap with existing files):
+   281→   680→  - `prisma/schema-profile.md` — schema addendum for `username` + `bio` on `User`.
+   282→   681→  - `src/app/api/profile/[username]/route.ts` — PUBLIC `GET` profile endpoint.
+   283→   682→  - `src/app/api/profile/me/route.ts` — auth-required `GET` (own profile) + `PATCH` (update name/bio/username).
+   284→   683→  - `src/components/music/profile-view.tsx` — full profile page component with embedded edit dialog.
+   285→   684→  - `/agent-ctx/3-A-public-profiles.md` — work record.
+   286→   685→- API contract implemented exactly per spec:
+   287→   686→  - `GET /api/profile/[username]` is PUBLIC (no auth); returns `{ user, songs, playlists }`; songs via `toPublicSong` (no audio bytes); playlists are slim `{ id, name, trackCount, createdAt }`; 404 on unknown username.
+   288→   687→  - `GET /api/profile/me` is auth-required (401); returns the same full profile shape.
+   289→   688→  - `PATCH /api/profile/me` is auth-required; zod-validated; username uniqueness enforced; supports partial updates (only changed fields written).
+   290→   689→- Username validator: `^[a-z0-9]+(?:-[a-z0-9]+)*$` + length 3–20 → lowercase, alphanumeric + single hyphens, must start/end alphanumeric, no consecutive hyphens. Matches the spec exactly.
+   291→   690→- ProfileView is ready to mount: render `<ProfileView username={username} isOwnProfile={...} onProfileUpdated={(u) => router.replace(`/u/${u.username}`)} />` in the orchestrator's `/u/[username]/page.tsx`.
+   292→   691→- TypeScript strict throughout (no `any`); uses `Song` from `@/lib/types` and the existing `CoverImage` + `usePlayerStore` + shadcn `Dialog`/`Input`/`Textarea`/`Label`/`Button`. Dark theme only; accent palette is fuchsia/violet/rose (no indigo/blue).
+   293→   692→- Lint: `bun run lint` passes clean for the whole project.
+   294→   693→- ⚠️ INTEGRATION TODOs for the orchestrator (documented in detail in `/agent-ctx/3-A-public-profiles.md`):
+   295→   694→  1. Merge `prisma/schema-profile.md` into `prisma/schema.prisma` (add `username String? @unique` + `bio String?` to `User`).
+   296→   695→  2. Run `bun run db:push` to apply the schema + regenerate the Prisma client (required before the new API routes will type-check at runtime — ESLint doesn't deep-check Prisma client field access, so lint passes today but the queries would fail until db:push runs; same pattern as Tasks 2-A and 2-D).
+   297→   696→  3. Create `src/app/u/[username]/page.tsx` that reads `params.username`, computes `isOwnProfile` server-side (compare `getCurrentUserId()` against the profile owner, or compare path username to the current user's stored username), and renders `<ProfileView .../>`.
+   298→   697→  4. Optional: add a "View my profile" link in the sidebar/top-bar (only when the current user has a username set).
+   299→   698→- Did NOT modify any existing file (no schema.prisma, no types.ts, no other API routes, no other components, no layout, no globals.css). Did NOT start/stop the dev server.
+   300→   699→

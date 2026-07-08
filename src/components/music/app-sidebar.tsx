@@ -13,11 +13,14 @@ import {
   ListMusic,
   LogOut,
   Loader2,
+  Compass,
+  BarChart3,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AceStatusIndicator } from "./ace-status-indicator";
 
-export type SidebarView = "create" | "library" | "liked" | "playlist";
+export type SidebarView = "create" | "library" | "liked" | "playlist" | "browse" | "analytics" | "settings";
 
 export interface AppSidebarProps {
   view: SidebarView;
@@ -92,6 +95,24 @@ export function AppSidebar({
             onClick={() => onViewChange("create")}
             icon={<Home className="size-5" aria-hidden />}
             label="Home"
+          />
+          <NavBtn
+            active={view === "browse"}
+            onClick={() => onViewChange("browse")}
+            icon={<Compass className="size-5" aria-hidden />}
+            label="Browse"
+          />
+          <NavBtn
+            active={view === "analytics"}
+            onClick={() => onViewChange("analytics")}
+            icon={<BarChart3 className="size-5" aria-hidden />}
+            label="Analytics"
+          />
+          <NavBtn
+            active={view === "settings"}
+            onClick={() => onViewChange("settings")}
+            icon={<SettingsIcon className="size-5" aria-hidden />}
+            label="Settings"
           />
           <button
             type="button"

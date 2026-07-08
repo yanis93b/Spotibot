@@ -1,0 +1,855 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useEffect, useState } from "react";
+     4→import { motion } from "framer-motion";
+     5→import {
+     6→  Calendar,
+     7→  Pencil,
+     8→  Loader2,
+     9→  Music2,
+    10→  ListMusic,
+    11→  Play,
+    12→  Pause,
+    13→  User as UserIcon,
+    14→  AlertCircle,
+    15→} from "lucide-react";
+    16→import { Button } from "@/components/ui/button";
+    17→import { Input } from "@/components/ui/input";
+    18→import { Textarea } from "@/components/ui/textarea";
+    19→import { Label } from "@/components/ui/label";
+    20→import {
+    21→  Dialog,
+    22→  DialogContent,
+    23→  DialogHeader,
+    24→  DialogTitle,
+    25→  DialogFooter,
+    26→  DialogClose,
+    27→} from "@/components/ui/dialog";
+    28→import { cn } from "@/lib/utils";
+    29→import { useToast } from "@/hooks/use-toast";
+    30→import { usePlayerStore } from "@/lib/player-store";
+    31→import type { Song } from "@/lib/types";
+    32→import { CoverImage } from "./cover-image";
+    33→
+    34→/**
+    35→ * Local copies of the public-profile response types. Kept in sync with
+    36→ * `src/app/api/profile/[username]/route.ts` — they are frozen by the spec so
+    37→ * the duplication is safe.
+    38→ */
+    39→interface PublicProfileUser {
+    40→  id: string;
+    41→  name: string | null;
+    42→  username: string | null;
+    43→  bio: string | null;
+    44→  image: string | null;
+    45→  createdAt: string;
+    46→}
+    47→
+    48→interface PublicPlaylistSummary {
+    49→  id: string;
+    50→  name: string;
+    51→  trackCount: number;
+    52→  createdAt: string;
+    53→}
+    54→
+    55→interface PublicProfileResponse {
+    56→  user: PublicProfileUser;
+    57→  songs: Song[];
+    58→  playlists: PublicPlaylistSummary[];
+    59→}
+    60→
+    61→export interface ProfileViewProps {
+    62→  /** Username of the profile to display (path param from /u/[username]). */
+    63→  username: string;
+    64→  /** Whether the viewer is the profile owner — shows the "Edit Profile" button. */
+    65→  isOwnProfile?: boolean;
+    66→  /** Called after a successful PATCH so the parent can redirect (e.g. on username change). */
+    67→  onProfileUpdated?: (updated: PublicProfileUser) => void;
+    68→  /** Called when a playlist row is clicked (optional — parent decides navigation). */
+    69→  onOpenPlaylist?: (playlistId: string) => void;
+    70→}
+    71→
+    72→/** Deterministic hue (0–360) from an arbitrary string. Same scheme as cover-image.tsx. */
+    73→function hueFromString(s: string): number {
+    74→  let h = 0;
+    75→  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+    76→  return h;
+    77→}
+    78→
+    79→/** Extract up to 2 uppercase initials from a display name. */
+    80→function getInitials(name: string | null, username: string | null): string {
+    81→  if (name && name.trim()) {
+    82→    const parts = name.trim().split(/\s+/).filter(Boolean);
+    83→    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    84→    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    85→  }
+    86→  if (username) return username.slice(0, 2).toUpperCase();
+    87→  return "??";
+    88→}
+    89→
+    90→/** "Member since Jan 2024" — stable, locale-formatted, no relative time. */
+    91→function formatMemberSince(iso: string): string {
+    92→  try {
+    93→    const d = new Date(iso);
+    94→    return `Member since ${d.toLocaleDateString("en-US", { month: "short", year: "numeric" })}`;
+    95→  } catch {
+    96→    return "Member";
+    97→  }
+    98→}
+    99→
+   100→/** "Jan 2024" — compact date for playlist rows. */
+   101→function formatShortDate(iso: string): string {
+   102→  try {
+   103→    return new Date(iso).toLocaleDateString("en-US", {
+   104→      month: "short",
+   105→      year: "numeric",
+   106→    });
+   107→  } catch {
+   108→    return "";
+   109→  }
+   110→}
+   111→
+   112→/**
+   113→ * Public user profile page.
+   114→ *
+   115→ * Layout:
+   116→ *   1. Glass header card — large avatar (image or initials gradient), display
+   117→ *      name, @username, bio, "Member since" date, and (when isOwnProfile) an
+   118→ *      "Edit Profile" button that opens a dialog.
+   119→ *   2. Songs grid — responsive grid of CoverImage + title + genre·mood, with
+   120→ *      a hover play overlay wired to the shared player store.
+   121→ *   3. Playlists list — gradient-covered rows with name, track count, and
+   122→ *      creation date.
+   123→ *
+   124→ * The component fetches its own data via GET /api/profile/[username] (which is
+   125→ * public — no auth required). When the owner edits their profile, the dialog
+   126→ * PATCHes /api/profile/me and optimistically updates the local state; the
+   127→ * parent can react (e.g. redirect on username change) via onProfileUpdated.
+   128→ */
+   129→export function ProfileView({
+   130→  username,
+   131→  isOwnProfile = false,
+   132→  onProfileUpdated,
+   133→  onOpenPlaylist,
+   134→}: ProfileViewProps) {
+   135→  const { toast } = useToast();
+   136→  const [profile, setProfile] = useState<PublicProfileResponse | null>(null);
+   137→  const [loading, setLoading] = useState(true);
+   138→  const [error, setError] = useState<string | null>(null);
+   139→  const [editOpen, setEditOpen] = useState(false);
+   140→
+   141→  const fetchProfile = useCallback(async (uname: string) => {
+   142→    setLoading(true);
+   143→    setError(null);
+   144→    try {
+   145→      const res = await fetch(
+   146→        `/api/profile/${encodeURIComponent(uname.toLowerCase())}`,
+   147→        { cache: "no-store" },
+   148→      );
+   149→      if (res.status === 404) {
+   150→        setProfile(null);
+   151→        setError("Profile not found");
+   152→        return;
+   153→      }
+   154→      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+   155→      const data: PublicProfileResponse = await res.json();
+   156→      setProfile(data);
+   157→    } catch (e) {
+   158→      console.error("profile-view: fetch failed", e);
+   159→      setProfile(null);
+   160→      setError("Failed to load profile. Please try again.");
+   161→    } finally {
+   162→      setLoading(false);
+   163→    }
+   164→  }, []);
+   165→
+   166→  useEffect(() => {
+   167→    fetchProfile(username);
+   168→  }, [username, fetchProfile]);
+   169→
+   170→  const handleUpdated = useCallback(
+   171→    (updated: PublicProfileUser) => {
+   172→      // Optimistically patch the local state so the UI reflects the change
+   173→      // immediately. The parent may additionally redirect (e.g. on a username
+   174→      // change) which would remount this component with a new prop.
+   175→      setProfile((prev) =>
+   176→        prev ? { ...prev, user: updated } : prev,
+   177→      );
+   178→      onProfileUpdated?.(updated);
+   179→    },
+   180→    [onProfileUpdated],
+   181→  );
+   182→
+   183→  // ─── Loading skeleton ────────────────────────────────────────────────────
+   184→  if (loading) {
+   185→    return <ProfileSkeleton />;
+   186→  }
+   187→
+   188→  // ─── Error / 404 ──────────────────────────────────────────────────────────
+   189→  if (error || !profile) {
+   190→    return (
+   191→      <div className="grid min-h-[60vh] place-items-center px-4 py-16">
+   192→        <div className="max-w-md text-center">
+   193→          <div className="mx-auto mb-4 grid size-20 place-items-center rounded-full bg-white/[0.04] ring-1 ring-white/10">
+   194→            <AlertCircle className="size-9 text-muted-foreground" aria-hidden />
+   195→          </div>
+   196→          <h2 className="text-xl font-semibold text-foreground">
+   197→            {error === "Profile not found"
+   198→              ? "Profile not found"
+   199→              : "Something went wrong"}
+   200→          </h2>
+   201→          <p className="mt-2 text-sm text-muted-foreground">
+   202→            {error === "Profile not found"
+   203→              ? `We couldn't find a user named @${username}. Check the spelling and try again.`
+   204→              : error ?? "Please try again later."}
+   205→          </p>
+   206→        </div>
+   207→      </div>
+   208→    );
+   209→  }
+   210→
+   211→  const { user, songs, playlists } = profile;
+   212→
+   213→  return (
+   214→    <div className="space-y-10 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+   215→      {/* ─── Header card ─────────────────────────────────────────────────── */}
+   216→      <ProfileHeader
+   217→        user={user}
+   218→        isOwnProfile={isOwnProfile}
+   219→        onEdit={() => setEditOpen(true)}
+   220→      />
+   221→
+   222→      {/* ─── Songs ──────────────────────────────────────────────────────── */}
+   223→      <section aria-label={`${user.name ?? user.username ?? "User"}'s tracks`}>
+   224→        <div className="mb-4 flex items-center justify-between gap-3">
+   225→          <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+   226→            <Music2 className="size-5 text-fuchsia-400" aria-hidden />
+   227→            Tracks
+   228→            <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-xs font-medium text-muted-foreground">
+   229→              {songs.length}
+   230→            </span>
+   231→          </h2>
+   232→        </div>
+   233→        {songs.length === 0 ? (
+   234→          <EmptyHint
+   235→            icon={<Music2 className="size-6 text-muted-foreground" aria-hidden />}
+   236→            title="No tracks yet"
+   237→            subtitle={
+   238→              isOwnProfile
+   239→                ? "Generate your first track and it will appear here."
+   240→                : "This user hasn't generated any tracks yet."
+   241→            }
+   242→          />
+   243→        ) : (
+   244→          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+   245→            {songs.map((song) => (
+   246→              <ProfileSongCard key={song.id} song={song} />
+   247→            ))}
+   248→          </div>
+   249→        )}
+   250→      </section>
+   251→
+   252→      {/* ─── Playlists ──────────────────────────────────────────────────── */}
+   253→      <section aria-label={`${user.name ?? user.username ?? "User"}'s playlists`}>
+   254→        <div className="mb-4 flex items-center justify-between gap-3">
+   255→          <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+   256→            <ListMusic className="size-5 text-fuchsia-400" aria-hidden />
+   257→            Playlists
+   258→            <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-xs font-medium text-muted-foreground">
+   259→              {playlists.length}
+   260→            </span>
+   261→          </h2>
+   262→        </div>
+   263→        {playlists.length === 0 ? (
+   264→          <EmptyHint
+   265→            icon={<ListMusic className="size-6 text-muted-foreground" aria-hidden />}
+   266→            title="No playlists yet"
+   267→            subtitle={
+   268→              isOwnProfile
+   269→                ? "Create a playlist from your library to see it here."
+   270→                : "This user hasn't created any playlists yet."
+   271→            }
+   272→          />
+   273→        ) : (
+   274→          <ul className="space-y-2">
+   275→            {playlists.map((p) => (
+   276→              <ProfilePlaylistRow
+   277→                key={p.id}
+   278→                playlist={p}
+   279→                onClick={onOpenPlaylist ? () => onOpenPlaylist(p.id) : undefined}
+   280→              />
+   281→            ))}
+   282→          </ul>
+   283→        )}
+   284→      </section>
+   285→
+   286→      {/* ─── Edit dialog (own profile only) ─────────────────────────────── */}
+   287→      {isOwnProfile && (
+   288→        <EditProfileDialog
+   289→          open={editOpen}
+   290→          onOpenChange={setEditOpen}
+   291→          currentUser={user}
+   292→          onSaved={handleUpdated}
+   293→          toast={toast}
+   294→        />
+   295→      )}
+   296→    </div>
+   297→  );
+   298→}
+   299→
+   300→// ─────────────────────────────────────────────────────────────────────────────
+   301→// Sub-components
+   302→// ─────────────────────────────────────────────────────────────────────────────
+   303→
+   304→/** Glassmorphism header card with avatar + identity + edit button. */
+   305→function ProfileHeader({
+   306→  user,
+   307→  isOwnProfile,
+   308→  onEdit,
+   309→}: {
+   310→  user: PublicProfileUser;
+   311→  isOwnProfile: boolean;
+   312→  onEdit: () => void;
+   313→}) {
+   314→  const hue = hueFromString(user.id);
+   315→  const hue2 = (hue + 50) % 360;
+   316→  const initials = getInitials(user.name, user.username);
+   317→  const displayName = user.name ?? user.username ?? "Anonymous";
+   318→
+   319→  return (
+   320→    <motion.header
+   321→      initial={{ opacity: 0, y: 8 }}
+   322→      animate={{ opacity: 1, y: 0 }}
+   323→      transition={{ duration: 0.3 }}
+   324→      className={cn(
+   325→        "glass-card relative overflow-hidden rounded-3xl p-6 sm:p-8",
+   326→      )}
+   327→    >
+   328→      {/* Decorative gradient halo behind the avatar */}
+   329→      <div
+   330→        aria-hidden
+   331→        className="pointer-events-none absolute -right-20 -top-20 size-64 rounded-full opacity-30 blur-3xl"
+   332→        style={{
+   333→          background: `radial-gradient(circle, hsl(${hue} 70% 50%), transparent 70%)`,
+   334→        }}
+   335→      />
+   336→
+   337→      <div className="relative flex flex-col items-start gap-5 sm:flex-row sm:items-center sm:gap-7">
+   338→        {/* Avatar */}
+   339→        <div
+   340→          className="grid size-24 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-white/15 sm:size-28"
+   341→          style={{
+   342→            background:
+   343→              user.image != null
+   344→                ? undefined
+   345→                : `linear-gradient(135deg, hsl(${hue} 70% 50%), hsl(${hue2} 70% 42%))`,
+   346→          }}
+   347→        >
+   348→          {user.image ? (
+   349→            <img
+   350→              src={user.image}
+   351→              alt={displayName}
+   352→              className="h-full w-full object-cover"
+   353→              referrerPolicy="no-referrer"
+   354→            />
+   355→          ) : (
+   356→            <span className="text-2xl font-bold text-white sm:text-3xl">
+   357→              {initials}
+   358→            </span>
+   359→          )}
+   360→        </div>
+   361→
+   362→        {/* Identity */}
+   363→        <div className="min-w-0 flex-1">
+   364→          <div className="flex flex-wrap items-start justify-between gap-3">
+   365→            <div className="min-w-0">
+   366→              <h1
+   367→                className="truncate text-2xl font-bold text-foreground sm:text-3xl"
+   368→                title={displayName}
+   369→              >
+   370→                {displayName}
+   371→              </h1>
+   372→              {user.username && (
+   373→                <p
+   374→                  className="mt-1 truncate text-sm text-muted-foreground"
+   375→                  title={`@${user.username}`}
+   376→                >
+   377→                  @{user.username}
+   378→                </p>
+   379→              )}
+   380→            </div>
+   381→
+   382→            {isOwnProfile && (
+   383→              <Button
+   384→                type="button"
+   385→                variant="outline"
+   386→                size="sm"
+   387→                onClick={onEdit}
+   388→                className="shrink-0 border-white/10 bg-white/[0.03] text-foreground hover:bg-white/[0.08]"
+   389→              >
+   390→                <Pencil className="size-3.5" aria-hidden />
+   391→                Edit Profile
+   392→              </Button>
+   393→            )}
+   394→          </div>
+   395→
+   396→          {user.bio && (
+   397→            <p className="mt-3 max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground/80">
+   398→              {user.bio}
+   399→            </p>
+   400→          )}
+   401→
+   402→          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+   403→            <span className="inline-flex items-center gap-1.5">
+   404→              <Calendar className="size-3.5" aria-hidden />
+   405→              {formatMemberSince(user.createdAt)}
+   406→            </span>
+   407→            {!user.username && isOwnProfile && (
+   408→              <span className="inline-flex items-center gap-1.5 text-fuchsia-300">
+   409→                <UserIcon className="size-3.5" aria-hidden />
+   410→                Set a username to share your profile
+   411→              </span>
+   412→            )}
+   413→          </div>
+   414→        </div>
+   415→      </div>
+   416→    </motion.header>
+   417→  );
+   418→}
+   419→
+   420→/** A single song card in the profile's tracks grid. */
+   421→function ProfileSongCard({ song }: { song: Song }) {
+   422→  const current = usePlayerStore((s) => s.current);
+   423→  const isPlaying = usePlayerStore((s) => s.isPlaying);
+   424→  const playSong = usePlayerStore((s) => s.playSong);
+   425→  const togglePlay = usePlayerStore((s) => s.togglePlay);
+   426→
+   427→  const isCurrent = current?.id === song.id;
+   428→  const showPause = isCurrent && isPlaying;
+   429→
+   430→  const handlePlay = (e: React.MouseEvent) => {
+   431→    e.stopPropagation();
+   432→    if (isCurrent) togglePlay();
+   433→    else playSong(song);
+   434→  };
+   435→
+   436→  return (
+   437→    <motion.div
+   438→      layout
+   439→      initial={{ opacity: 0, y: 8 }}
+   440→      animate={{ opacity: 1, y: 0 }}
+   441→      transition={{ duration: 0.2 }}
+   442→      className="group relative"
+   443→    >
+   444→      <div className="relative mb-3 aspect-square w-full overflow-hidden rounded-xl">
+   445→        <CoverImage
+   446→          id={song.id}
+   447→          src={song.coverUrl}
+   448→          alt={song.title}
+   449→          size={999}
+   450→          className="!h-full !w-full rounded-xl"
+   451→          playing={showPause}
+   452→        />
+   453→        <div
+   454→          className={cn(
+   455→            "absolute inset-0 flex items-end justify-end p-3 transition-opacity",
+   456→            isCurrent ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+   457→          )}
+   458→          style={{
+   459→            background:
+   460→              "linear-gradient(to top, rgba(0,0,0,0.55), transparent 55%)",
+   461→          }}
+   462→        >
+   463→          <button
+   464→            type="button"
+   465→            onClick={handlePlay}
+   466→            aria-label={showPause ? `Pause ${song.title}` : `Play ${song.title}`}
+   467→            className="grid size-11 translate-y-1 place-items-center rounded-full bg-fuchsia-500 text-white shadow-lg shadow-fuchsia-500/40 transition-all hover:scale-110 hover:bg-fuchsia-400 group-hover:translate-y-0"
+   468→          >
+   469→            {showPause ? (
+   470→              <Pause className="size-5" fill="currentColor" aria-hidden />
+   471→            ) : (
+   472→              <Play className="size-5 translate-x-0.5" fill="currentColor" aria-hidden />
+   473→            )}
+   474→          </button>
+   475→        </div>
+   476→      </div>
+   477→      <p
+   478→        className={cn(
+   479→          "truncate text-sm font-semibold",
+   480→          isCurrent ? "text-fuchsia-300" : "text-foreground",
+   481→        )}
+   482→        title={song.title}
+   483→      >
+   484→        {song.title}
+   485→      </p>
+   486→      <p className="mt-0.5 truncate text-xs text-muted-foreground">
+   487→        {song.genre} · {song.mood}
+   488→      </p>
+   489→    </motion.div>
+   490→  );
+   491→}
+   492→
+   493→/** A single playlist row in the profile's playlists list. */
+   494→function ProfilePlaylistRow({
+   495→  playlist,
+   496→  onClick,
+   497→}: {
+   498→  playlist: PublicPlaylistSummary;
+   499→  onClick?: () => void;
+   500→}) {
+   501→  const hue = hueFromString(playlist.id);
+   502→  const hue2 = (hue + 50) % 360;
+   503→  const interactive = Boolean(onClick);
+   504→
+   505→  const inner = (
+   506→    <>
+   507→      <div
+   508→        className="grid size-12 shrink-0 place-items-center overflow-hidden rounded-lg ring-1 ring-white/10"
+   509→        style={{
+   510→          background: `linear-gradient(135deg, hsl(${hue} 70% 50%), hsl(${hue2} 70% 42%))`,
+   511→        }}
+   512→      >
+   513→        <ListMusic className="size-5 text-white/85" aria-hidden />
+   514→      </div>
+   515→      <div className="min-w-0 flex-1">
+   516→        <p
+   517→          className="truncate text-sm font-medium text-foreground"
+   518→          title={playlist.name}
+   519→        >
+   520→          {playlist.name}
+   521→        </p>
+   522→        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+   523→          Playlist · {playlist.trackCount}{" "}
+   524→          {playlist.trackCount === 1 ? "track" : "tracks"}
+   525→          {playlist.createdAt && ` · ${formatShortDate(playlist.createdAt)}`}
+   526→        </p>
+   527→      </div>
+   528→    </>
+   529→  );
+   530→
+   531→  if (interactive) {
+   532→    return (
+   533→      <li>
+   534→        <button
+   535→          type="button"
+   536→          onClick={onClick}
+   537→          className="flex w-full items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-left transition-colors hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-400/50"
+   538→        >
+   539→          {inner}
+   540→        </button>
+   541→      </li>
+   542→    );
+   543→  }
+   544→  return (
+   545→    <li className="flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
+   546→      {inner}
+   547→    </li>
+   548→  );
+   549→}
+   550→
+   551→/** Compact empty-state hint used inside the Songs / Playlists sections. */
+   552→function EmptyHint({
+   553→  icon,
+   554→  title,
+   555→  subtitle,
+   556→}: {
+   557→  icon: React.ReactNode;
+   558→  title: string;
+   559→  subtitle: string;
+   560→}) {
+   561→  return (
+   562→    <div className="grid place-items-center rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.015] px-6 py-12 text-center">
+   563→      <div className="mb-3 grid size-12 place-items-center rounded-full bg-white/[0.04] ring-1 ring-white/10">
+   564→        {icon}
+   565→      </div>
+   566→      <p className="text-sm font-medium text-foreground">{title}</p>
+   567→      <p className="mt-1 max-w-xs text-xs text-muted-foreground">{subtitle}</p>
+   568→    </div>
+   569→  );
+   570→}
+   571→
+   572→/** Loading skeleton for the whole profile page. */
+   573→function ProfileSkeleton() {
+   574→  return (
+   575→    <div className="space-y-10 px-4 py-6 sm:px-6 sm:py-8 lg:px-8" aria-busy="true">
+   576→      <div className="glass-card rounded-3xl p-6 sm:p-8">
+   577→        <div className="flex flex-col items-start gap-5 sm:flex-row sm:items-center sm:gap-7">
+   578→          <div className="size-24 shrink-0 animate-pulse rounded-full bg-white/10 sm:size-28" />
+   579→          <div className="flex-1 space-y-3">
+   580→            <div className="h-7 w-48 animate-pulse rounded bg-white/10" />
+   581→            <div className="h-4 w-32 animate-pulse rounded bg-white/10" />
+   582→            <div className="h-4 w-72 animate-pulse rounded bg-white/10" />
+   583→            <div className="h-3 w-40 animate-pulse rounded bg-white/10" />
+   584→          </div>
+   585→        </div>
+   586→      </div>
+   587→      <div className="space-y-4">
+   588→        <div className="h-6 w-32 animate-pulse rounded bg-white/10" />
+   589→        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+   590→          {Array.from({ length: 5 }).map((_, i) => (
+   591→            <div key={i} className="space-y-2">
+   592→              <div className="aspect-square w-full animate-pulse rounded-xl bg-white/10" />
+   593→              <div className="h-4 w-3/4 animate-pulse rounded bg-white/10" />
+   594→              <div className="h-3 w-1/2 animate-pulse rounded bg-white/10" />
+   595→            </div>
+   596→          ))}
+   597→        </div>
+   598→      </div>
+   599→    </div>
+   600→  );
+   601→}
+   602→
+   603→// ─────────────────────────────────────────────────────────────────────────────
+   604→// Edit dialog
+   605→// ─────────────────────────────────────────────────────────────────────────────
+   606→
+   607→/** Live client-side validation mirrors the server's zod schema. */
+   608→const USERNAME_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+   609→
+   610→interface EditDialogProps {
+   611→  open: boolean;
+   612→  onOpenChange: (open: boolean) => void;
+   613→  currentUser: PublicProfileUser;
+   614→  onSaved: (updated: PublicProfileUser) => void;
+   615→  toast: ReturnType<typeof useToast>["toast"];
+   616→}
+   617→
+   618→function EditProfileDialog({
+   619→  open,
+   620→  onOpenChange,
+   621→  currentUser,
+   622→  onSaved,
+   623→  toast,
+   624→}: EditDialogProps) {
+   625→  const [name, setName] = useState(currentUser.name ?? "");
+   626→  const [bio, setBio] = useState(currentUser.bio ?? "");
+   627→  const [username, setUsername] = useState(currentUser.username ?? "");
+   628→  const [saving, setSaving] = useState(false);
+   629→  const [formError, setFormError] = useState<string | null>(null);
+   630→
+   631→  // Sync local form state whenever the dialog opens (in case the user prop
+   632→  // changed since the last open).
+   633→  useEffect(() => {
+   634→    if (open) {
+   635→      setName(currentUser.name ?? "");
+   636→      setBio(currentUser.bio ?? "");
+   637→      setUsername(currentUser.username ?? "");
+   638→      setFormError(null);
+   639→    }
+   640→  }, [open, currentUser]);
+   641→
+   642→  const bioCount = bio.length;
+   643→  const bioOver = bioCount > 200;
+   644→
+   645→  // Per-field validation. We surface a single inline error (first failure).
+   646→  const validate = useCallback((): string | null => {
+   647→    const trimmedName = name.trim();
+   648→    if (!trimmedName) return "Name cannot be empty.";
+   649→    if (trimmedName.length > 80) return "Name must be at most 80 characters.";
+   650→
+   651→    if (bio.length > 200) return "Bio must be at most 200 characters.";
+   652→
+   653→    if (username) {
+   654→      if (username.length < 3 || username.length > 20) {
+   655→        return "Username must be 3–20 characters.";
+   656→      }
+   657→      if (!USERNAME_REGEX.test(username)) {
+   658→        return "Username must be lowercase letters, numbers, and single hyphens; cannot start or end with a hyphen.";
+   659→      }
+   660→    }
+   661→    return null;
+   662→  }, [name, bio, username]);
+   663→
+   664→  const handleSubmit = async (e: React.FormEvent) => {
+   665→    e.preventDefault();
+   666→    const err = validate();
+   667→    if (err) {
+   668→      setFormError(err);
+   669→      return;
+   670→    }
+   671→
+   672→    // Build the patch body — only include fields that actually changed so we
+   673→    // don't trigger the "no updatable fields" 400 if nothing was edited.
+   674→    const body: {
+   675→      name?: string;
+   676→      bio?: string;
+   677→      username?: string;
+   678→    } = {};
+   679→    const trimmedName = name.trim();
+   680→    if (trimmedName !== (currentUser.name ?? "")) body.name = trimmedName;
+   681→    if (bio !== (currentUser.bio ?? "")) body.bio = bio;
+   682→    const lowerUsername = username.toLowerCase();
+   683→    if (lowerUsername !== (currentUser.username ?? "")) {
+   684→      body.username = lowerUsername;
+   685→    }
+   686→
+   687→    if (Object.keys(body).length === 0) {
+   688→      // Nothing changed — just close.
+   689→      onOpenChange(false);
+   690→      return;
+   691→    }
+   692→
+   693→    setSaving(true);
+   694→    setFormError(null);
+   695→    try {
+   696→      const res = await fetch("/api/profile/me", {
+   697→        method: "PATCH",
+   698→        headers: { "Content-Type": "application/json" },
+   699→        body: JSON.stringify(body),
+   700→      });
+   701→      const data: unknown = await res.json();
+   702→      if (!res.ok) {
+   703→        const message =
+   704→          (data as { error?: string } | null)?.error ??
+   705→          "Failed to update profile.";
+   706→        setFormError(message);
+   707→        return;
+   708→      }
+   709→      const updated = (data as { user: PublicProfileUser }).user;
+   710→      toast({
+   711→        title: "Profile updated",
+   712→        description: body.username
+   713→          ? `Your profile is now @${updated.username}`
+   714→          : "Your changes have been saved.",
+   715→      });
+   716→      onSaved(updated);
+   717→      onOpenChange(false);
+   718→    } catch (e) {
+   719→      console.error("profile-view: PATCH failed", e);
+   720→      setFormError("Network error. Please try again.");
+   721→    } finally {
+   722→      setSaving(false);
+   723→    }
+   724→  };
+   725→
+   726→  return (
+   727→    <Dialog open={open} onOpenChange={onOpenChange}>
+   728→      <DialogContent className="border-white/10 bg-[#1a1a22] sm:max-w-md">
+   729→        <DialogHeader>
+   730→          <DialogTitle className="text-lg font-bold text-foreground">
+   731→            Edit your profile
+   732→          </DialogTitle>
+   733→        </DialogHeader>
+   734→        <form onSubmit={handleSubmit} className="space-y-5">
+   735→          {/* Username */}
+   736→          <div className="space-y-2">
+   737→            <Label htmlFor="profile-username" className="text-xs font-medium text-muted-foreground">
+   738→              Username
+   739→            </Label>
+   740→            <div className="relative">
+   741→              <span
+   742→                aria-hidden
+   743→                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground"
+   744→              >
+   745→                @
+   746→              </span>
+   747→              <Input
+   748→                id="profile-username"
+   749→                value={username}
+   750→                onChange={(e) =>
+   751→                  setUsername(
+   752→                    e.target.value
+   753→                      .toLowerCase()
+   754→                      .replace(/[^a-z0-9-]/g, "")
+   755→                      .slice(0, 20),
+   756→                  )
+   757→                }
+   758→                maxLength={20}
+   759→                placeholder="your-handle"
+   760→                autoComplete="off"
+   761→                spellCheck={false}
+   762→                disabled={saving}
+   763→                className="border-white/10 bg-black/30 pl-7"
+   764→              />
+   765→            </div>
+   766→            <p className="text-[11px] text-muted-foreground">
+   767→              3–20 lowercase letters, numbers, and hyphens. This is your public
+   768→              URL: /u/&lt;username&gt;.
+   769→            </p>
+   770→          </div>
+   771→
+   772→          {/* Name */}
+   773→          <div className="space-y-2">
+   774→            <Label htmlFor="profile-name" className="text-xs font-medium text-muted-foreground">
+   775→              Display name
+   776→            </Label>
+   777→            <Input
+   778→              id="profile-name"
+   779→              value={name}
+   780→              onChange={(e) => setName(e.target.value.slice(0, 80))}
+   781→              maxLength={80}
+   782→              placeholder="Your name"
+   783→              disabled={saving}
+   784→              className="border-white/10 bg-black/30"
+   785→            />
+   786→          </div>
+   787→
+   788→          {/* Bio */}
+   789→          <div className="space-y-2">
+   790→            <Label htmlFor="profile-bio" className="text-xs font-medium text-muted-foreground">
+   791→              Bio
+   792→            </Label>
+   793→            <Textarea
+   794→              id="profile-bio"
+   795→              value={bio}
+   796→              onChange={(e) => setBio(e.target.value.slice(0, 200))}
+   797→              maxLength={200}
+   798→              rows={3}
+   799→              placeholder="Tell visitors about yourself and your music."
+   800→              disabled={saving}
+   801→              className="resize-none border-white/10 bg-black/30"
+   802→            />
+   803→            <div className="flex items-center justify-between text-[11px]">
+   804→              <span className="text-muted-foreground">Max 200 characters.</span>
+   805→              <span
+   806→                className={cn(
+   807→                  "tabular-nums",
+   808→                  bioOver ? "text-rose-400" : "text-muted-foreground",
+   809→                )}
+   810→              >
+   811→                {bioCount}/200
+   812→              </span>
+   813→            </div>
+   814→          </div>
+   815→
+   816→          {formError && (
+   817→            <p className="text-xs text-rose-400" role="alert">
+   818→              {formError}
+   819→            </p>
+   820→          )}
+   821→
+   822→          <DialogFooter>
+   823→            <DialogClose asChild>
+   824→              <Button
+   825→                type="button"
+   826→                variant="ghost"
+   827→                disabled={saving}
+   828→                className="text-muted-foreground hover:text-foreground"
+   829→              >
+   830→                Cancel
+   831→              </Button>
+   832→            </DialogClose>
+   833→            <Button
+   834→              type="submit"
+   835→              disabled={saving}
+   836→              className="bg-gradient-to-r from-fuchsia-500 via-purple-500 to-rose-500 text-white hover:brightness-110"
+   837→            >
+   838→              {saving ? (
+   839→                <>
+   840→                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+   841→                  Saving…
+   842→                </>
+   843→              ) : (
+   844→                "Save changes"
+   845→              )}
+   846→            </Button>
+   847→          </DialogFooter>
+   848→        </form>
+   849→      </DialogContent>
+   850→    </Dialog>
+   851→  );
+   852→}
+   853→
+   854→export default ProfileView;
+   855→

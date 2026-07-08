@@ -14,6 +14,10 @@ import { NowPlayingPanel } from "@/components/music/now-playing-panel";
 import { GenerationLoader } from "@/components/music/generation-loader";
 import { CreatePlaylistDialog } from "@/components/music/create-playlist-dialog";
 import { AddToPlaylistMenu } from "@/components/music/add-to-playlist-menu";
+import { BrowseView } from "@/components/music/browse-view";
+import { QueuePanel } from "@/components/music/queue-panel";
+import { AnalyticsView } from "@/components/music/analytics-view";
+import { SettingsView } from "@/components/music/settings-view";
 import { useSongs } from "@/hooks/use-songs";
 import { usePlaylists } from "@/hooks/use-playlists";
 import { usePlayerStore } from "@/lib/player-store";
@@ -78,6 +82,7 @@ export default function Home() {
   }, [rateLimitUntil]);
   const [search, setSearch] = useState("");
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [queuePanelOpen, setQueuePanelOpen] = useState(false);
   const { toast } = useToast();
 
   const patchCurrent = usePlayerStore((s) => s.patchCurrent);
@@ -398,6 +403,42 @@ export default function Home() {
                     </section>
                   )}
                 </motion.div>
+              ) : view === "browse" ? (
+                <motion.div
+                  key="browse"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <BrowseView
+                    onToggleLike={handleToggleLike}
+                    onDelete={handleDelete}
+                    playlists={playlists}
+                    onAddToPlaylist={handleAddToPlaylist}
+                    onCreatePlaylist={() => setCreateDialogOpen(true)}
+                  />
+                </motion.div>
+              ) : view === "analytics" ? (
+                <motion.div
+                  key="analytics"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <AnalyticsView />
+                </motion.div>
+              ) : view === "settings" ? (
+                <motion.div
+                  key="settings"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <SettingsView />
+                </motion.div>
               ) : view === "playlist" && activePlaylistMeta ? (
                 <motion.div
                   key="playlist"
@@ -459,6 +500,9 @@ export default function Home() {
         {/* Sticky bottom player */}
         <BottomPlayer onToggleLike={handleToggleLike} onNext={handleNext} onPrev={handlePrev} />
       </div>
+
+      {/* Queue panel (slide-in from right) */}
+      <QueuePanel open={queuePanelOpen} onClose={() => setQueuePanelOpen(false)} />
 
       {/* Right "Now Playing" panel (xl+) */}
       <NowPlayingPanel song={current} onToggleLike={handleToggleLike} />

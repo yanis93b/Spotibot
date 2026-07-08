@@ -2,6 +2,8 @@
 
 import { ChevronLeft, ChevronRight, Plus, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import ThemeToggle from "./theme-toggle";
+import { NotificationBell } from "./notification-bell";
 
 export interface TopBarProps {
   /** Show the "Create" CTA on the right. */
@@ -64,7 +66,9 @@ export function TopBar({ onCreate, isGenerating, search, onSearchChange, showSea
         </div>
       )}
 
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <NotificationBell />
+        <ThemeToggle />
         <button
           type="button"
           onClick={onCreate}

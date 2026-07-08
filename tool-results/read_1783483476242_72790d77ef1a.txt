@@ -1,0 +1,302 @@
+   200→---
+   201→Task ID: 6 (Ace Music integration round)
+   202→Agent: orchestrator
+   203→Task: Connect the real Ace Music model (api.acemusic.ai, ACE-Step v1.5 turbo), improve the UI, verify all functions.
+   204→
+   205→Work Log:
+   206→- Probed api.acemusic.ai: root/docs return 404 (Flask). /v1/models works with the provided Bearer key → model "acemusic/acestep-v1.5-turbo".
+   207→- Web-searched for the contract. Found official docs: github.com/ace-step/ACE-Step-1.5 + ace-step-skills SKILL.md. The cloud API is OpenAI-compatible: POST /v1/chat/completions, synchronous, returns base64 MP3 in choices[0].message.audio[].audio_url.url.
+   208→- Ran a real test generation: 17.5s for a 20s track, returned a valid 321KB MP3 (ID3v2.4, 128kbps, 48kHz, Stereo).
+   209→- Added ACE_API_BASE / ACE_API_KEY / ACE_MODEL / ACE_REQUEST_TIMEOUT_MS to .env (server-only).
+   210→- Created src/lib/ai/ace-client.ts: generateMusic() (builds <prompt>/<lyrics> message, audio_config, retries on 429/5xx/network, decodes base64 data URL → Buffer) + checkAceHealth().
+   211→- Rewrote src/lib/ai/audio-synth.ts to delegate to ace-client (preserves the swappable-adapter signature; legacy chunk utils retained for import compat). format now always 'mp3'.
+   212→- Updated src/lib/types.ts: GenerateRequest gains duration/language/highQuality; added LANGUAGES + STYLE_TO_CAPTION; deprecated STYLE_TO_VOICE.
+   213→- Updated src/app/api/generate/route.ts: builds a caption from prompt+genre+mood+style, passes duration/language/highQuality to the synth, persists audioFormat + durationMs.
+   214→- Added src/app/api/health/ace/route.ts (GET) for the UI status pill.
+   215→- UI improvements: prompt-composer now has a Duration slider (10–180s), Vocal Language <Select>, and a High-Quality <Switch> + an estimated-time hint. generation-loader stages reworded for real text-to-music. site-header gains a live AceStatusIndicator (polls /api/health/ace, green/amber/red dot) + real acemusic.ai + ACE-Step GitHub links. site-footer now says "Powered by the open-source ACE-Step v1.5 model · real text-to-music synthesis." Hero copy updated.
+   216→- Cleared old TTS-based songs from the DB (they were WAV-mislabeled).
+   217→- `bun run lint` → clean.
+   218→
+   219→Agent Browser verification (real model):
+   220→- Header status pill: "Ace Music online" (GET /api/health/ace 200).
+   221→- Generated "Neon Dreams" (Electronic/Happy/Female Vocal, 30s, standard quality): POST /api/generate 200 in 21.7s; GET /api/audio/{id} 200 in 234ms.
+   222→- Player: Play→Pause toggled (audio played), no console errors.
+   223→- Download link: "Download Neon Dreams as MP3" → /api/audio/{id}. curl-verified the served file: HTTP 200, 480813 bytes, content-type audio/mpeg, "MPEG ADTS, layer III, v1, 128 kbps, 48 kHz, Stereo" — real music.
+   224→- Lyrics panel: full [Intro]/[Verse 1]/[Verse 2]/[Chorus]/[Bridge]/[Chorus]/[Outro] structure, themed to "chasing dreams under city lights".
+   225→- Library: track listed with Play + Delete (AlertDialog confirm).
+   226→- Mobile (390x844): composer → player → library stack correctly. Sticky footer: root has min-h-screen+flex-col, footer has mt-auto (confirmed via DOM eval).
+   227→- Recorded demo-ace.webm (881K).
+   228→
+   229→Stage Summary:
+   230→- The platform now runs on the REAL Ace Music (ACE-Step v1.5 turbo) cloud API. Audio is genuine sung music (MP3), not TTS.
+   231→- API key is server-only (env), never exposed to the client.
+   232→- All Suno core functions verified end-to-end: prompt → lyrics → music → play → download → history → delete, responsive + sticky footer.
+   233→- Adapter is still swappable: to point at a self-hosted ACE-Step server later, only src/lib/ai/ace-client.ts needs to change.
+   234→
+   235→---
+   236→Task ID: 7 (Suno-style redesign round)
+   237→Agent: orchestrator
+   238→Task: Redesign the interface to closely match Suno (sidebar + bottom player + card grid + custom mode + likes), make all functions work, verify.
+   239→
+   240→Work Log:
+   241→- Backend: added `liked Boolean @default(false)` to Song schema + index; ran db:push; added PATCH /api/songs/[id] (toggles liked, returns updated public Song); added customLyrics/customTitle to GenerateRequest + zod schema; generate route now skips the LLM lyricist when customLyrics is provided and derives a title from the first lyric line.
+   242→- Frontend architecture: created src/lib/player-store.ts (Zustand) — single shared <audio> element owned by the bottom player, with playSong/togglePlay/seek/volume/like-patch actions. This is the Suno "one player, many controls" model.
+   243→- New components: app-sidebar.tsx (Create/Library/Liked nav, collapses to 64px icon rail on mobile), bottom-player.tsx (sticky bottom bar — cover, title, like, transport, seek, volume, lyrics drawer, download; owns the <audio> element), song-card.tsx (square gradient cover, hover play overlay, like/download/delete menu), song-feed.tsx (responsive grid + skeletons + empty states + liked filter), song-detail.tsx (full-screen overlay with cover, tags, prompt, full lyrics, transport, like, download).
+   244→- Updated prompt-composer.tsx: added Simple/Custom mode toggle (Suno-style tabs). Custom mode reveals a Title field + a monospace Lyrics editor; validation requires >=20 chars. The generate request carries customLyrics/customTitle when in custom mode.
+   245→- Updated use-songs.ts: added optimistic toggleLike helper. Updated page.tsx: new layout = sidebar + main (Create/Library views via AnimatePresence) + sticky bottom player + detail overlay. Generate → auto-play + flip to Library. Like → optimistic + PATCH + revert on error. Delete → optimistic + DELETE.
+   246→- Cleared stale Prisma client cache (killed dev server, rm -rf .next, restarted) so the `liked` field is recognized.
+   247→- `bun run lint` → clean.
+   248→
+   249→Agent Browser verification (real Ace Music model):
+   250→- Sidebar renders Create/Library/Liked; Ace Music online status; collapses to 64px icon rail on mobile (verified via DOM: aside width=64).
+   251→- Simple mode: generated "Rainy Study Session" (Lo-Fi/Dreamy/Female Vocal, 30s). POST /api/generate 200 in ~18s. Auto-played, bottom player slid up (Pause button = playing), view flipped to Library, card appeared in grid.
+   252→- Bottom player: cover + title + genre·mood tags, like button, play/pause, seek slider (0:16/0:30), volume slider, lyrics toggle, download link — all functional.
+   253→- Like: clicked card like button → PATCH /api/songs/{id} 200 → card + bottom player both updated to "Unlike"/liked state. Reloaded page → like PERSISTED (DB-backed).
+   254→- Liked filter: clicking "Liked" in sidebar shows only liked tracks ("Liked Tracks" heading, only the liked song visible).
+   255→- Detail overlay: clicking a card opens a full dialog with cover, title, tags, duration badge, prompt, full lyrics, Play/Like/Download actions; closes on X.
+   256→- Custom mode: switched to Custom tab → Title + Lyrics fields appeared. Filled "Midnight Highway" + my own lyrics. Generated → POST /api/generate 200 in 18.4s (faster, LLM skipped). Verified the detail overlay shows MY lyrics verbatim (not LLM-generated) — "Driving down the highway at midnight...". Ace Music rendered my lyrics into sung music.
+   257→- Mobile (390x844): sidebar = 64px icon rail, cards stack 2-wide, bottom player visible with condensed controls, root = min-h-dvh flex. Sticky footer confirmed.
+   258→- No console/runtime errors. demo-suno.webm recorded (1.5M).
+   259→
+   260→Stage Summary:
+   261→- The interface now closely matches Suno: left sidebar nav, sticky bottom player bar (signature), responsive card grid, Simple/Custom mode toggle, like/favorites with DB persistence, detail overlay.
+   262→- ALL functions verified working: generate (simple + custom), play/pause, seek, volume, like (persistent), download, delete, lyrics view, liked filter, responsive mobile.
+   263→- Real Ace Music model drives everything; custom mode skips the LLM and renders user-supplied lyrics directly.
+   264→
+   265→---
+   266→Task ID: 8 (Spotify-like redesign + cover generation + all model params)
+   267→Agent: orchestrator
+   268→Task: Make the interface truly Spotify-like, add AI cover generation, and expose all Ace Music model parameters.
+   269→
+   270→Work Log:
+   271→- Backend: added coverData/coverFormat/bpm/keyScale/timeSig/seed fields to Song schema; db:push; cleared old songs.
+   272→- Created src/lib/ai/cover-generator.ts: generateCover() uses z-ai-web-dev-sdk images.generations.create (1024x1024 PNG) with a genre/mood-aware prompt. Best-effort (returns null on failure, UI falls back to gradient).
+   273→- Extended ace-client.ts: AceGenerationParams gains audioFormat + seed; buildPayload now sets audio_config.format dynamically and use_random_seed/seed based on input; AceGenerationResult returns format + seedUsed.
+   274→- Extended audio-synth.ts: SynthParams/SynthResult pass through audioFormat + seed.
+   275→- Updated types.ts: Song gains coverUrl, bpm, keyScale, timeSignature, seed. GenerateRequest gains audioFormat, bpm, keyScale, timeSignature, seed. Added AUDIO_FORMATS, MUSICAL_KEYS, TIME_SIGNATURES option arrays.
+   276→- Updated song-mapper.ts: maps all new fields (coverUrl from coverData presence, seed BigInt→Number).
+   277→- Updated /api/generate route: zod validates all new params; audio + cover run in Promise.all (parallel); persists coverData/bpm/keyScale/timeSig/seed.
+   278→- Added /api/cover/[id] route (streams PNG, 404 when no cover). Updated /api/audio/[id] MIME mapper for flac/opus/aac/wav32.
+   279→- Frontend: rebuilt as true Spotify 3-panel layout.
+   280→  - app-sidebar.tsx: Spotify-style left sidebar (brand + Home/Search nav card, Library card with All/Liked filter chips + search box + library entries, footer with status). Hidden on mobile (sm:flex).
+   281→  - top-bar.tsx: sticky top bar with back/forward arrows + search box (Library) + gradient Create CTA.
+   282→  - track-list.tsx: Spotify-style table (#, cover+title+tags, album, like, duration, hover menu). Double-click to play.
+   283→  - now-playing-panel.tsx: right panel (xl+) with large cover, title, tags, musical-attribute chips (BPM/key/time-sig/seed/format), prompt, full lyrics.
+   284→  - bottom-player.tsx: Spotify-style 3-section bar (cover+title+like left, transport center with shuffle/prev/play/next/repeat + seek, volume+queue+download right).
+   285→  - cover-image.tsx: reusable component — renders AI PNG from /api/cover/{id}, falls back to deterministic gradient + music icon on missing/errored.
+   286→  - page.tsx: 3-panel orchestration (sidebar / main with top bar + carousels/track list / now-playing right panel). Home view shows composer + "Recently generated" carousel. Library/Liked views show track list. Next/prev queue logic.
+   287→  - prompt-composer.tsx: added collapsible "Advanced — all model parameters" section with BPM slider (+enable switch), Key selector, Time signature selector, Audio format selector, Seed input (+enable switch).
+   288→- Fixed Radix Select empty-value crash (used "auto" sentinel instead of "").
+   289→- Restarted dev server (rm -rf .next) to pick up new Prisma client with coverData/seed fields.
+   290→- `bun run lint` → clean.
+   291→
+   292→Agent Browser verification (real Ace Music + real cover generation):
+   293→- 3-panel Spotify layout renders: left sidebar (Home/Search/Library + All/Liked filters), center (top bar + content), right now-playing panel (xl+).
+   294→- Generated "Neon Dreams" (Lo-Fi/Dreamy/Female Vocal, 120 BPM enabled): POST /api/generate 200; cover + audio generated in parallel.
+   295→- Cover art: GET /api/cover/{id} 200, AI-generated 1024x1024 PNG, naturalWidth=1024, displayed in track list + carousel + now-playing panel + bottom player.
+   296→- Audio: GET /api/audio/{id} 200, plays in bottom player (Play→Pause toggle).
+   297→- Bottom player: cover + title + tags + like (left), transport with prev/play/next + seek bar (center), download + volume (right).
+   298→- Now-playing panel: large cover + title + "Lo-Fi · 120 BPM" chip + format chip + prompt + full lyrics.
+   299→- Carousel: "Recently generated" on Home view with cover images + hover play button.
+   300→- Track list: Spotify-style table with # / cover+title / album / like / duration.
+   301→- Like: PATCH /api/songs/{id} 200, persisted (shows "Unlike" after toggle).
+   302→- Advanced params: BPM slider (120), Key selector, Time signature, Audio format (MP3), Seed — all visible and functional.
+   303→- Mobile (390x844): sidebar hidden (w=0), bottom player works, responsive.
+   304→- No console/runtime errors. All operations 200.
+   305→
+   306→Stage Summary:
+   307→- The interface is now a true Spotify clone: 3-panel layout, bottom player bar, track list table, carousels, now-playing right panel.
+   308→- AI cover art generation works (parallel with audio, 1024x1024 PNG, gradient fallback).
+   309→- ALL Ace Music model parameters exposed: BPM, key, time signature, audio format (mp3/wav/flac/opus/aac/wav32), seed (reproducible), high-quality LM planning, duration, language, custom lyrics.
+   310→- Lint clean, no runtime errors, all features verified end-to-end.
+   311→
+   312→---
+   313→Task ID: 9 (Playlists + mobile nav + keyboard + home polish)
+   314→Agent: orchestrator
+   315→Task: Continue developing toward a full Spotify clone — add playlists, mobile navigation, keyboard shortcuts, and home-page polish.
+   316→
+   317→Work Log:
+   318→- Backend: added Playlist + PlaylistSong models (join table with position + unique [playlistId, songId] + cascade deletes) to Prisma schema; db:push.
+   319→- Added Playlist type to types.ts + playlist-mapper.ts (computes trackCount + durationMs from joined items).
+   320→- API routes: GET/POST /api/playlists (list + create), GET/PATCH/DELETE /api/playlists/[id] (single + rename + delete), POST/DELETE /api/playlists/[id]/tracks (add/remove track with position re-packing). All zod-validated, Prisma P2025→404, P2002→400 (duplicate).
+   321→- Frontend hook: use-playlists.ts (initial fetch + create/rename/remove/addTrack/removeTrack/fetchPlaylist with optimistic updates).
+   322→- Create-playlist dialog (create-playlist-dialog.tsx): modal with name input, validation, loading state.
+   323→- Add-to-playlist menu (add-to-playlist-menu.tsx): nested dropdown listing playlists, with per-playlist spinner + check on add, "Create new playlist" entry. Integrated into the TrackList "more" menu.
+   324→- Mobile bottom nav (mobile-nav.tsx): Spotify-style tab bar (Home/Search/Library/Liked/Create) shown only on mobile (sidebar hidden below sm).
+   325→- Keyboard shortcuts hook (use-keyboard-shortcuts.ts): Space/K=play-pause, ←/→=seek 5s, ↑/↓=volume, M=mute, L=like current, N=next, P=prev. Ignores when typing in inputs.
+   326→- Sidebar updated: new "Playlists" section listing user playlists (deterministic gradient covers) + "Create Playlist" row; SidebarView type extended with "playlist".
+   327→- Home polish: time-based greeting ("Good morning/afternoon/evening"), quick-access tiles (Liked Songs + 2 recent tracks, Spotify Home style).
+   328→- Playlist view: banner header (gradient cover + name + track count + duration + Play All + Delete) + TrackList of the playlist's songs.
+   329→- page.tsx rewritten: orchestrates create/library/liked/playlist views, mobile nav, keyboard shortcuts, create-playlist dialog, playlist open/add/delete. Queue (next/prev) navigates the current view's list.
+   330→- Restarted dev server (rm -rf .next) for new Prisma client.
+   331→- `bun run lint` → clean.
+   332→
+   333→Agent Browser verification:
+   334→- Home: "Good evening" greeting (time-based), quick-access tiles, Recently generated carousel.
+   335→- Mobile (390x844): sidebar hidden, mobile bottom nav with Home/Search/Library/Liked/Create tabs.
+   336→- Create playlist: dialog opens, named "Late Night Vibes", POST /api/playlists 200, appears in sidebar, toast "Playlist created".
+   337→- Add to playlist: track "More" menu → "Add to playlist" submenu lists playlists + "Create new playlist"; added "Neon Dreams" → POST /api/playlists/{id}/tracks 200; API confirms "Late Night Vibes: 1 track".
+   338→- Playlist view: clicking playlist opens banner header (gradient cover + "Late Night Vibes" + "1 track" + Play All + Delete) + TrackList with the track.
+   339→- Keyboard shortcuts: pressed Space → bottom player center button toggled Play→Pause (verified via aria-label). All transport buttons present (Shuffle/Prev/Play-Pause/Next/Repeat/Queue/Mute/Fullscreen).
+   340→- Dev log: all playlist operations 200, no errors.
+   341→
+   342→Stage Summary:
+   343→- Full Spotify-like playlist system: create / rename / delete / add track / remove track / view, with ordered positions + cascade deletes.
+   344→- Mobile navigation bar (the sidebar is hidden on mobile; the bottom tab bar fills the gap).
+   345→- Keyboard shortcuts (Space, arrows, M, L, N, P) — verified Space toggles play/pause.
+   346→- Home page polish: time-based greeting + quick-access tiles + carousel.
+   347→- Lint clean, all features verified end-to-end in the browser.
+   348→
+   349→---
+   350→Task ID: auth-api-scoping
+   351→Agent: api-scoping
+   352→Task: Scope all API routes by authenticated user (ownerId)
+   353→
+   354→Work Log:
+   355→- src/app/api/generate/route.ts — POST: added getCurrentUserId() auth gate (401) at the top; set ownerId: userId on db.song.create.
+   356→- src/app/api/songs/route.ts — GET: added auth gate; filtered findMany with where: { ownerId: userId }.
+   357→- src/app/api/songs/[id]/route.ts — DELETE + PATCH: added auth gate; scoped delete/update where: { id, ownerId: userId } (404 on P2025, no existence leak).
+   358→- src/app/api/playlists/route.ts — GET + POST: added auth gate; GET filtered by ownerId, POST sets ownerId on create.
+   359→- src/app/api/playlists/[id]/route.ts — GET/PATCH/DELETE: added auth gate; getPlaylistWithSongs() now takes ownerId; update/delete scoped where: { id, ownerId: userId }.
+   360→- src/app/api/playlists/[id]/tracks/route.ts — POST + DELETE: added auth gate; POST verifies both playlist + song belong to caller (scoped by ownerId); DELETE verifies playlist ownership before mutating (404 if not owned).
+   361→- src/app/api/audio/[id]/route.ts — GET: added auth gate; findUnique scoped where: { id, ownerId: userId } (404 if not owned).
+   362→- src/app/api/cover/[id]/route.ts — GET: added auth gate; findUnique scoped where: { id, ownerId: userId } (404 if not owned).
+   363→- src/app/api/health/ace/route.ts — left PUBLIC (no auth), per instructions.
+   364→- Verified: bun run lint passes clean (no errors/warnings in touched files).
+   365→
+   366→Stage Summary:
+   367→- All protected API routes now require authentication: unauthenticated requests return 401 { error: "Unauthorized" }.
+   368→- All Song reads/creates/mutations are scoped by ownerId = current user's id; cross-user access returns 404 (no existence leakage).
+   369→- All Playlist reads/creates/mutations are scoped by ownerId; track add/remove verifies playlist ownership (and song ownership on add) before mutating.
+   370→- Audio + cover binary streams are owner-scoped, so a user can only stream their own assets.
+   371→- health/ace remains a public liveness probe.
+   372→- No non-API files were modified; existing logic (validation, rate limiting, position re-packing, error mapping) preserved.
+   373→
+   374→---
+   375→Task ID: 2-C
+   376→Agent: theme-toggle
+   377→Task: Phase 2 — Build the light/dark theme toggle for SpotiBot (persisted to localStorage, no flash of wrong theme).
+   378→
+   379→Work Log:
+   380→- Read worklog.md (architecture + file ownership) and confirmed the shared `Song`/API contracts, the existing 3-panel Spotify-like UI in `src/components/music/**`, and the existing `:root` (light) + `.dark` (dark) CSS variables in `src/app/globals.css`. Confirmed `layout.tsx` currently forces `<html className="dark" suppressHydrationWarning>` and that the existing UI components consume Tailwind theme tokens (`bg-background`, `text-foreground`, …) — so they will re-skin automatically when the `dark` class is removed.
+   381→- Created `src/lib/theme-init.tsx` (default export `ThemeInit`, `"use client"`):
+   382→  - Renders `null`.
+   383→  - On mount, `useEffect` reads `localStorage.getItem("spotibot-theme")` (defaults to `"dark"` when absent or unreadable), then adds/removes the `dark` class on `document.documentElement`.
+   384→  - Wraps localStorage access in `try/catch` (private-mode / disabled storage robustness) — on failure falls back to dark.
+   385→  - Exports `SPOTIBOT_THEME_KEY = "spotibot-theme"` and `type SpotibotTheme = "light" | "dark"` so the toggle stays in lock-step with the same key + type.
+   386→  - Designed to be mounted by the orchestrator high in the tree (top of `<body>` or in `<head>`) so the class is set before the rest of the UI paints.
+   387→- Created `src/components/music/theme-toggle.tsx` (default export `ThemeToggle`, `"use client"`):
+   388→  - shadcn `Button` (`variant="ghost"`, `size="icon"`) sized `size-8 rounded-full`, lucide-react `Sun` (when dark) / `Moon` (when light) at `size-4`, `aria-label="Toggle theme"`, optional `title` tooltip, accepts `className?` for positioning.
+   389→  - Click handler toggles the `dark` class on `<html>`, writes the new value to `localStorage`, and dispatches a custom `spotibot:theme-change` event.
+   390→  - Uses `useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)` to track the current theme from `localStorage`. `getServerSnapshot()` returns `"dark"` to match the SSR-forced `<html className="dark">` and avoid hydration mismatches; `getSnapshot()` reads `localStorage` (default `"dark"` on any failure).
+   391→  - `subscribe` listens to BOTH the native `storage` event (cross-tab sync) and the custom `spotibot:theme-change` event (in-tab sync after toggle).
+   392→  - A separate `useEffect([theme])` keeps `document.documentElement.classList` in sync with the store — this effect only mutates the DOM (no `setState`), which is the recommended "synchronize with external system" pattern and satisfies the `react-hooks/set-state-in-effect` lint rule. (First iteration used `useState` + `useEffect(setState)` which triggered that lint error; switched to `useSyncExternalStore` which is the idiomatic fix and adds cross-tab sync for free.)
+   393→  - Strict TS (no `any`), accessible, all `localStorage` access guarded.
+   394→- Ran `cd /home/z/my-project && bun run lint` → CLEAN (0 errors, 0 warnings) across the whole project.
+   395→- Wrote `/agent-ctx/2-C-theme-toggle.md` work record.
+   396→- Did NOT modify any other file (no layout, no globals.css, no other components, no API routes, no prisma, no lib/ai). The orchestrator is expected to: (1) mount `<ThemeInit/>` at the top of `<body>` (or in `<head>`) in `layout.tsx`; (2) place `<ThemeToggle/>` wherever the toggle should appear (e.g. inside `site-header.tsx` / `top-bar.tsx`).
+   397→
+   398→Stage Summary:
+   399→- Two files created, both owned exclusively by this agent:
+   400→  - `src/lib/theme-init.tsx` — no-flash theme bootstrap (default-export client component, renders `null`, syncs `dark` class from `localStorage` on mount).
+   401→  - `src/components/music/theme-toggle.tsx` — compact Sun/Moon icon button (`size-8`, icon `size-4`, rounded-full, ghost) that toggles + persists the theme via `localStorage`, with cross-tab sync via `useSyncExternalStore`.
+   402→- The toggle is ready to drop into the existing 3-panel Spotify UI; all existing components already consume Tailwind theme tokens (`bg-background`, `text-foreground`, `border`, `card`, `muted-foreground`, …) defined in `globals.css` for both `:root` (light) and `.dark` (dark), so they will re-skin automatically when the `dark` class is removed.
+   403→- Default theme remains `"dark"` (matches the current forced `<html className="dark">`), so no behavior change for existing users until they click the toggle.
+   404→- Lint: `bun run lint` passes clean.
+   405→- Awaiting orchestrator to wire `<ThemeInit/>` into the layout and `<ThemeToggle/>` into the header/top bar.
+   406→
+   407→---
+   408→Task ID: 2-B
+   409→Agent: browse-discover
+   410→Task: Phase 2 of SpotiBot — build a Spotify-style Browse/Discover view (genre tiles + mood filters) backed by an owner-scoped `/api/browse` endpoint.
+   411→
+   412→Work Log:
+   413→- Read worklog.md (architecture, API contract, file ownership, auth-scoping convention), src/lib/types.ts (Song/GENRES/MOODS/Playlist), src/lib/session.ts (getCurrentUserId), src/lib/db.ts, src/lib/song-mapper.ts (toPublicSong), prisma/schema.prisma (Song model + ownerId), and existing API routes (songs, songs/[id], playlists, playlists/[id]/tracks) to lock the auth + response + error-handling patterns.
+   414→- Read src/components/music/track-list.tsx to confirm the exact TrackListProps shape (so BrowseView can pass through onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist verbatim) and src/components/music/cover-image.tsx for the deterministic-hue hashing scheme (reused for genre tile gradients).
+   415→- Created src/app/api/browse/route.ts (GET):
+   416→  - Auth gate (401 if not signed in) via getCurrentUserId; every query scoped by ownerId = userId (matches the auth-api-scoping convention from the previous round).
+   417→  - Reads `genre` + `mood` from `new URL(req.url).searchParams`; validates against canonical GENRES/MOODS readonly tuples (cast to ReadonlySet<string> for O(1) lookups) → 400 on unknown values.
+   418→  - Three response shapes: (a) no params → { genres: [{ genre, count, songs: Song[] }] } with top 4 per genre newest-first, genres with 0 songs dropped (implemented as Promise.all over GENRES running db.song.count + db.song.findMany({take:4}) per genre — ≤10 small parallel queries, no N+1); (b) ?genre=X → { songs: Song[] } (≤100, newest first); (c) ?genre=X&mood=Y → { songs: Song[] } filtered by both.
+   419→  - Uses db from @/lib/db and toPublicSong from @/lib/song-mapper; 500 path catches all errors, logs server-side, returns generic { error: "Failed to load browse data." } with no stack leak — identical pattern to the songs/playlists routes.
+   420→- Created src/components/music/browse-view.tsx ('use client'):
+   421→  - Spotify-style Browse page: header → genre grid → mood chips → filtered TrackList.
+   422→  - Genre grid: all 10 GENRES as gradient tiles in a responsive grid (2/3/4/5 cols), aspect-[16/10]. Gradient is deterministic per genre name via hueFromString hash → linear-gradient(135deg, hsl(h 65% 42%), hsl((h+40) 75% 32%)) — same hashing scheme as cover-image.tsx so colors are consistent. Tiles show genre name + track count (from the aggregate fetch). Clicking toggles the filter on/off.
+   423→  - Mood chips: "All" + 8 MOODS in a flex-wrap row. Active = fuchsia accent (border-fuchsia-400 bg-fuchsia-500/20); inactive = white/[0.04] muted surface. Both tile + chip are real <button> elements with aria-pressed + descriptive aria-label, focus-visible rings.
+   424→  - Reuses the existing <TrackList/> from ./track-list, passing through onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist verbatim.
+   425→  - Single useEffect keyed on [selectedGenre, selectedMood, genres] handles every (genre, mood) combination: on mount (no genre, no cached genres) fetches GET /api/browse → caches buckets + seeds songs with flattened previews; genre selected → fetches ?genre=X[&mood=Y]; mood-only (no genre) → client-filters the cached previews by mood (no network round-trip); a `cancelled` flag prevents stale writes after rapid filter changes.
+   426→  - UX: Reset-filters button appears when any filter is active; empty state (Sparkles + hint) when no tracks match; error state (rose-tinted alert) on fetch failure; dynamic heading ("Featured" → "Pop" → "Pop · Happy").
+   427→  - Props: BrowseViewProps = { onToggleLike, onDelete, playlists?, onAddToPlaylist?, onCreatePlaylist? } — matches the spec exactly.
+   428→- Ran `bun run lint` → EXIT 0, no errors/warnings in either new file. Dev log clean (no compile errors).
+   429→
+   430→Stage Summary:
+   431→- Files created (owned, no overlap with existing files):
+   432→  - src/app/api/browse/route.ts — GET aggregated + filtered browse data, auth-scoped.
+   433→  - src/components/music/browse-view.tsx — Browse view (genre grid + mood chips + filtered TrackList).
+   434→- /api/browse contract implemented exactly per spec: 3 response shapes (no params / ?genre / ?genre&mood), auth-required, owner-scoped, validated query params.
+   435→- BrowseView is self-contained and ready to mount: render <BrowseView .../> in page.tsx and pass through the existing onToggleLike/onDelete/playlists/onAddToPlaylist/onCreatePlaylist handlers. A new SidebarView value (e.g. "browse") + sidebar nav entry is the natural integration point (orchestrator's job — I did not modify page.tsx or any other existing file).
+   436→- TypeScript strict throughout, no `any`; uses GENRES/MOODS/Song/Playlist from @/lib/types. Dark theme only; accent palette is fuchsia (no indigo/blue).
+   437→- Lint: `bun run lint` passes clean for the whole project.
+   438→
+   439→---
+   440→Task ID: 2-A
+   441→Agent: queue-history
+   442→Task: Phase 2 — add a persistent play queue (Zustand) and a listening-history API (Prisma-backed, per-user scoped), plus the queue UI panel and a compact queue button for the bottom player.
+   443→
+   444→Work Log:
+   445→- Read `src/lib/player-store.ts` to learn its API: `playSong(song)` loads a song into the shared `<audio>` element and starts playback; `getState()` exposes the store non-reactively. Designed the queue store to call `usePlayerStore.getState().playSong(song)` whenever the current track advances (next/prev/playFrom) — the queue store never touches the audio element directly.
+   446→- Read `src/lib/session.ts` (`getCurrentUserId`), `src/lib/db.ts`, `src/lib/song-mapper.ts` (`toPublicSong`), `src/lib/types.ts` (`Song`), and the existing `api/playlists/route.ts` + `api/songs/[id]/route.ts` to match the auth-scoping + zod-validation + P2025→404 patterns established by the api-scoping agent.
+   447→- Read `src/components/music/bottom-player.tsx` to understand the integration point (the placeholder ListMusic button at lines 220-227 will be swapped for `<QueueButton>`) and `cover-image.tsx` for cover rendering.
+   448→- Created `src/lib/queue-store.ts` — Zustand store. `queue: Song[]` holds the full ordered list (including current); `currentIndex` (-1 = empty) points at the playing track. Actions: `playFrom` (load a list at index, start playing), `addToQueue` (append), `playNext` (insert after current), `removeFromQueue` (adjusts index), `clearQueue`, `reorderQueue` (DnD; tracks current through the move), `next`/`prev` (advance + hand off to player store), `getCurrent`. Plus reactive helpers `useCurrentQueueSong()` and `useUpcomingSongs()`. First-enqueue fast-path: adding to an empty queue starts playing immediately (Spotify behavior).
+   449→- Created `src/app/api/history/route.ts` — `GET` (list user's history newest-first, max 50, includes song via `include: { song: true }`, mapped through `toPublicSong`); `POST` (zod-validates `{ songId }`, verifies song ownership via `findUnique({ where: { id, ownerId: userId } })` before creating the row, returns 201 with the created entry). Both scoped by `getCurrentUserId()`, both `force-dynamic`.
+   450→- Created `src/app/api/history/[id]/route.ts` — `DELETE` with the Next.js 16 async-params signature, scoped `where: { id, userId }`, P2025 → 404 (no existence leakage, matching api-scoping agent's pattern).
+   451→- Created `src/components/music/queue-panel.tsx` — slide-in-from-right panel (Framer Motion `x: "100%" → 0`). Shows "Next up" header with track count + Clear + close. Body is a `@dnd-kit` `DndContext` + `SortableContext` (verticalListSortingStrategy) of upcoming tracks (`queue[currentIndex+1..]`), each row: drag handle (`GripVertical`, only element with `{...attributes} {...listeners}`), `CoverImage`, title/meta, remove button. `PointerSensor` with `distance: 4` activation constraint to separate click from drag. Sortable id = stringified absolute queue index. Empty state with icon + hint. Dark glassmorphism (`bg-[#0a0a0f]/95 backdrop-blur-xl`, `border-white/[0.06]`) matching the existing `.glass-card` aesthetic.
+   452→- Created `src/components/music/queue-button.tsx` — purely presentational. `ListMusic` icon + fuchsia badge with upcoming count (hidden at 0, caps at "99+"). Lights up to fuchsia when `active`. Props: `count`, `active`, `onToggle`.
+   453→- Created `prisma/schema-history.md` — documents the `ListeningHistory` model (`id`, `userId`, `songId`, `playedAt`, `user`/`song` relations with `onDelete: Cascade`, `@@index([userId, playedAt])`) plus the `history ListeningHistory[]` back-relations to add to `User` and `Song`. Does NOT modify `prisma/schema.prisma` — orchestrator merges + runs `bun run db:push`.
+   454→- Ran `bun run lint` — PASS (clean, no errors or warnings in any file).
+   455→
+   456→Stage Summary:
+   457→- Queue store (`src/lib/queue-store.ts`) is fully reactive, integrates with `usePlayerStore` without creating a circular dep (player-store does not import queue-store), and exposes convenience selectors `useCurrentQueueSong()` / `useUpcomingSongs()`.
+   458→- History API (`/api/history` GET/POST + `/api/history/[id]` DELETE) follows the same auth-scoping + zod + P2025→404 conventions as the rest of the API surface; returns public `Song` shapes via `toPublicSong` so the frontend needs no new mapping.
+   459→- Queue UI (`queue-panel.tsx` + `queue-button.tsx`) is ready to drop into the bottom player: replace the placeholder ListMusic button with `<QueueButton count={upcomingCount} active={queueOpen} onToggle={toggleQueue} />` and render `<QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />` alongside `<BottomPlayer/>`.
+   460→- Prisma schema addendum is ready for the orchestrator to merge; the history route files are written against the future schema (lint passes because ESLint doesn't deep-type-check Prisma client field access — `db.listeningHistory` resolves once `db:push` runs).
+   461→- Integration TODOs (for the orchestrator / integrator agent, documented in `agent-ctx/2-A-queue-history.md`): wire the bottom player's `onNext`/`onPrev` to the queue store, swap the placeholder queue button for `<QueueButton>`, mount `<QueuePanel>` somewhere near the player, and POST to `/api/history` when a song starts playing (e.g. an effect watching `usePlayerStore.current?.id`).
+   462→
+   463→---
+   464→Task ID: 2-D
+   465→Agent: playlist-dnd
+   466→Task: Phase 2 — drag-and-drop reorder API + sortable track list component for the playlist view.
+   467→
+   468→Work Log:
+   469→- Read worklog.md to lock the architecture (multi-user NextAuth + Prisma/SQLite, PlaylistSong join with `position`, ownerId scoping on every playlist route) and the existing patterns (getCurrentUserId auth gate, zod body validation, P2025→404, `toPublicSong`/`toPublicPlaylist` mappers).
+   470→- Read existing playlist routes (`/api/playlists/[id]/route.ts` GET/PATCH/DELETE, `/api/playlists/[id]/tracks/route.ts` POST/DELETE) and the existing `TrackList` component + `CoverImage` to match styling + convention (glass-card, fuchsia accents, dark theme, grid row layout, hover play button).
+   471→- Read `prisma/schema.prisma` to confirm `PlaylistSong { id, playlistId, songId, position, addedAt }` with the compound unique `[playlistId, songId]` and index `[playlistId, position]` — that compound unique lets the reorder route update positions by `playlistId_songId` without first looking up the join row's PK.
+   472→- Confirmed `@dnd-kit/core@6.3.1` + `@dnd-kit/sortable@10.0.0` + `@dnd-kit/utilities@3.2.2` are already installed (no `bun add` needed).
+   473→- Created `src/app/api/playlists/[id]/reorder/route.ts` — POST handler:
+   474→  - Auth gate via `getCurrentUserId()` → 401 when no session.
+   475→  - Awaits Promise params (Next 16 convention).
+   476→  - zod schema: `{ orderedSongIds: string[] }` (non-empty array of trimmed non-empty strings).
+   477→  - Rejects duplicate ids in the body up-front (Set check) — a playlist cannot contain the same song twice, so any dup is a client bug.
+   478→  - Loads the playlist scoped `where: { id, ownerId: userId }` → 404 if not owned (no existence leak to other users).
+   479→  - Loads current `PlaylistSong` rows for the playlist (just `songId`), builds a Set, and verifies the body is a *set match*: same length AND every body id is currently in the playlist. Mismatch → 400 with a clear message. This keeps reorder a pure position-rewrite (add/remove still go through `/tracks`).
+   480→  - Rewrites every `position` in a single `db.$transaction` of `playlistSong.update({ where: { playlistId_songId }, data: { position: index } })` calls — atomic, so the playlist is never left half-reordered.
+   481→  - Returns `{ success: true }` 200; catches P2025 (race: track removed between fetch + update) → 404; generic 500 otherwise with server-side `console.error`.
+   482→- Created `src/components/music/sortable-track-list.tsx` — `"use client"` DnD track list:
+   483→  - `DndContext` (closestCenter collision) + `SortableContext` (verticalListSortingStrategy) wrapping a `<ul>` of `SortableTrackRow`s.
+   484→  - Sensors: `PointerSensor` with `activationConstraint: { distance: 6 }` so a click on the handle doesn't accidentally start a drag (and a click on the row plays the song, not starts a drag); `KeyboardSensor` with `sortableKeyboardCoordinates` for full a11y (Space to pick up, arrows to move, Enter/Space to drop).
+   485→  - `useSortable({ id: song.id })` per row; `setActivatorNodeRef` + sortable `attributes`/`listeners` are spread ONLY on the GripVertical drag-handle button — so the rest of the row stays click-to-play.
+   486→  - `transform`/`transition` applied via `CSS.Transform.toString(transform)` so the row follows the cursor while dragging and springs into its new slot on drop; `isDragging` adds a `z-10` lift + fuchsia ring + cursor-grabbing.
+   487→  - `handleDragEnd`: indexes the active+over ids in the current `songs`, `arrayMove`s, and calls `onReorder(next.map(s => s.id))`. NO local state — the parent owns the ordering and re-renders with the new `songs` array after the API call (dnd-kit's transforms handle the in-flight visual reflow).
+   488→  - Row layout: `[drag handle] [#/play] [cover + title + genre·mood] [style on sm+] [duration]` — mirrors the existing `TrackList` UX but with the GripVertical handle prepended.
+   489→  - Play state: reads `current` from `usePlayerStore` (per spec) as a fallback when `currentId` prop is omitted; uses the `isPlaying` prop for the play/pause icon. Click on current row → `store.togglePlay()` (local toggle, no parent round-trip). Click on a new row → `onPlay(song)` (parent wires up `store.playSong` + queue). Double-click anywhere on the row also plays.
+   490→  - Cover via the shared `<CoverImage>` component (renders AI PNG or deterministic gradient fallback, with a 3-bar equalizer overlay when playing).
+   491→  - Wrapped in a `.glass-card rounded-xl` div to match the existing dark-theme panel styling.
+   492→- Lint: `bun run lint` → 0 errors, 0 warnings (clean for the whole project).
+   493→- TypeScript: `npx tsc --noEmit` → 0 errors in my two files. (Pre-existing errors in other agents' files — `examples/websocket`, `skills/image-edit`, `src/app/api/generate`, `src/app/api/history`, `src/components/music/song-card`/`song-detail` — were NOT touched and are out of my ownership.) Fixed one self-caught TS2783 (`aria-roledescription` was specified both by me and by dnd-kit's `attributes` spread) by removing my explicit declaration and adding a comment that dnd-kit already sets role/tabIndex/aria-roledescription/aria-describedby.
+   494→- Dev log confirms the new files compiled cleanly (no errors during HMR); dev server is still serving the existing app on :3000.
+   495→
+   496→Stage Summary:
+   497→- Files created (owned, no overlap with other agents):
+   498→  - `src/app/api/playlists/[id]/reorder/route.ts` — POST reorder endpoint (auth + ownership + set-match validation + atomic transactional position rewrite).
+   499→  - `src/components/music/sortable-track-list.tsx` — dnd-kit-powered sortable track list with GripVertical handle, drag activator isolation, keyboard a11y, glass-card styling, store-backed play state.
+
+[showing lines 200-499 of 699; use offset=500 with limit to continue reading]

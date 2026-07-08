@@ -1,0 +1,19 @@
+{
+  "name": "SpotiBot — Le bot de musique moderne",
+  "short_name": "SpotiBot",
+  "description": "Génère des morceaux originaux à partir d'un prompt texte.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#d946ef",
+  "orientation": "any",
+  "categories": ["music", "entertainment", "productivity"],
+  "lang": "fr",
+  "dir": "ltr",
+  "scope": "/",
+  "icons": [
+    { "src": "/favicon-32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/spotibot-brand.png", "sizes": "160x160", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

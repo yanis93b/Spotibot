@@ -6,24 +6,29 @@ generator client {
 }
 
 datasource db {
-  // SQLite for local dev. Switch to postgresql for production (Neon/Supabase):
-  //   provider = "postgresql"
-  //   url      = env("DATABASE_URL")
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
 // A registered user. Created on sign-up (email/password) or on first OAuth
-// sign-in (GitHub). Owns songs and playlists.
+// sign-in (GitHub). Owns songs, playlists, history, and follow relationships.
 model User {
   id        String     @id @default(cuid())
   email     String     @unique
   name      String?
   password  String? // null for OAuth-only users
   image     String?
+  // Public profile fields (Phase 3)
+  username  String?    @unique // lowercase, alphanumeric + hyphens, 3–20 chars
+  bio       String? // free-form bio, max 200 chars
   createdAt DateTime   @default(now())
+
   songs     Song[]
   playlists Playlist[]
+  history   ListeningHistory[]
+  followers Follow[]   @relation("following") // people who follow me
+  following Follow[]   @relation("follower")  // people I follow
+  notifications Notification[]
 }
 
 // A generated song / track produced by the AI music pipeline.
@@ -46,17 +51,20 @@ model Song {
   timeSig     String?
   seed        BigInt?
   liked       Boolean  @default(false)
+  // When true, the track appears in the public Discover feed (Phase 3).
+  isPublic    Boolean  @default(false)
   createdAt   DateTime @default(now())
 
-  // Owner of this song. Required — every song belongs to a user.
   ownerId String
   owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   playlistItems PlaylistSong[]
+  history       ListeningHistory[]
 
   @@index([createdAt])
   @@index([liked])
   @@index([ownerId])
+  @@index([isPublic, createdAt])
 }
 
 // A user-created playlist (Spotify-style).
@@ -87,4 +95,45 @@ model PlaylistSong {
 
   @@unique([playlistId, songId])
   @@index([playlistId, position])
+}
+
+// A single "user played this song" event. Used to build the listening history.
+model ListeningHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  songId    String
+  playedAt  DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([userId, playedAt])
+}
+
+// Follow relationship: follower follows following (Phase 3 social).
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+// In-app notification (Phase 4). Types: follow, like, generation, system.
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, read, createdAt])
 }
