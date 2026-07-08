@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, Plus, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Search, UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ThemeToggle from "./theme-toggle";
 import { NotificationBell } from "./notification-bell";
@@ -14,13 +14,15 @@ export interface TopBarProps {
   onSearchChange: (q: string) => void;
   /** Whether the search box is visible (Library view only). */
   showSearch: boolean;
+  /** Open the import dialog. */
+  onImport?: () => void;
 }
 
 /**
  * Spotify-style sticky top bar: back/forward nav arrows on the left, a search
  * box (Library view), and a gradient "Create" CTA on the right.
  */
-export function TopBar({ onCreate, isGenerating, search, onSearchChange, showSearch }: TopBarProps) {
+export function TopBar({ onCreate, isGenerating, search, onSearchChange, showSearch, onImport }: TopBarProps) {
   return (
     <header
       className={cn(
@@ -67,6 +69,18 @@ export function TopBar({ onCreate, isGenerating, search, onSearchChange, showSea
       )}
 
       <div className="ml-auto flex items-center gap-2">
+        {onImport && (
+          <button
+            type="button"
+            onClick={onImport}
+            aria-label="Import audio file"
+            title="Import audio"
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 text-sm font-medium text-foreground/85 transition-colors hover:bg-white/10 hover:text-foreground"
+          >
+            <UploadCloud className="size-4 text-fuchsia-300" aria-hidden />
+            <span className="hidden sm:inline">Import</span>
+          </button>
+        )}
         <NotificationBell />
         <ThemeToggle />
         <button

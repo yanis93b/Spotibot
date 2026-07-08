@@ -23,6 +23,7 @@ import { FeedView } from "@/components/music/feed-view";
 import { ShareDialog } from "@/components/music/share-dialog";
 import { RadioToggle } from "@/components/music/radio-toggle";
 import { LyricsEditor } from "@/components/music/lyrics-editor";
+import { ImportDialog } from "@/components/music/import-dialog";
 import { useSongs } from "@/hooks/use-songs";
 import { usePlaylists } from "@/hooks/use-playlists";
 import { usePlayerStore } from "@/lib/player-store";
@@ -92,6 +93,7 @@ export default function Home() {
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [lyricsEditorOpen, setLyricsEditorOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [profileViewOpen, setProfileViewOpen] = useState(false);
   const { toast } = useToast();
   const { data: session } = useSession();
@@ -352,6 +354,7 @@ export default function Home() {
             search={search}
             onSearchChange={setSearch}
             showSearch={view !== "create"}
+            onImport={() => setImportDialogOpen(true)}
           />
 
           <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 pb-8 sm:px-6">
@@ -581,6 +584,16 @@ export default function Home() {
           }}
         />
       )}
+
+      {/* Import audio dialog */}
+      <ImportDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        onImported={(song) => {
+          prepend(song);
+          toast({ title: "Track imported!", description: `“${song.title}” added to your library.` });
+        }}
+      />
     </div>
   );
 }
