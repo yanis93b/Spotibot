@@ -1,0 +1,13 @@
+# Extra Python deps for the ACE-Step FastAPI server (pinned for reproducibility).
+# The core torch/torchaudio wheels are installed separately in the Dockerfile
+# from the CUDA 12.1 index. This file holds the auxiliary serving + audio
+# helpers that the modified infer-api server needs at runtime.
+soundfile==0.12.1
+numpy==1.26.4
+einops==0.8.0
+transformers==4.44.2
+diffusers==0.30.3
+accelerate==0.34.2
+sentencepiece==0.2.0
+pyyaml==6.0.2
+pydantic==2.10.4

@@ -55,6 +55,18 @@ model Song {
   isPublic    Boolean  @default(false)
   createdAt   DateTime @default(now())
 
+  // ─── Async generation pipeline (Phase P1) ────────────────────────────────
+  // Lifecycle: "generating" → "ready" (success) | "failed" (error).
+  // Defaults to "ready" so all pre-existing synchronous songs are playable.
+  status       String   @default("ready") // "generating" | "ready" | "failed"
+  // BullMQ job id when this song is being produced asynchronously. Cleared
+  // (set to null) once the job reaches a terminal state and the song is ready.
+  jobId        String?
+  // Last error message when status = "failed". Null otherwise.
+  errorMessage String?
+  // Denormalized play counter (incremented on each play event).
+  playCount    Int      @default(0)
+
   ownerId String
   owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
@@ -65,6 +77,33 @@ model Song {
   @@index([liked])
   @@index([ownerId])
   @@index([isPublic, createdAt])
+  @@index([status])
+  @@index([jobId])
+}
+
+// A BullMQ generation job record. Persisted alongside the queue so that the
+// API layer can serve job status / progress polling even when the Redis-backed
+// queue is unavailable (the synchronous fallback still writes a row here for
+// observability). One row per enqueued job; the `jobId` field mirrors the
+// BullMQ job id and is unique.
+model GenerationJob {
+  id        String   @id @default(cuid())
+  jobId     String   @unique
+  status    String   @default("queued") // "queued" | "active" | "completed" | "failed"
+  progress  Float    @default(0) // 0..100
+  userId    String
+  prompt    String
+  genre     String
+  mood      String
+  style     String
+  params    String? // JSON-encoded extra params (voice, duration, seed, ...)
+  error     String? // populated when status = "failed"
+  songId    String? // populated when status = "completed"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 // A user-created playlist (Spotify-style).

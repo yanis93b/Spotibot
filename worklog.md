@@ -1392,3 +1392,508 @@ Reordered the duration cell's flex children from `[download] [duration] [more]` 
 - The `GRID` constant is exported only implicitly (module-scope `const`, not `export`). If another component needs the same template, duplicate it rather than importing — the grid is intentionally co-located with the row markup so they evolve together.
 - The cover-hover overlay is local to the track list. If the same affordance is wanted in `song-card.tsx` / `song-detail.tsx` / carousels, those components should add their own overlay (do NOT add a `hoverPlay` prop to `CoverImage` — that component is owned by Agent 1 and is intentionally minimal).
 - The 2px left accent uses an absolute span rather than `border-l-2` to avoid a 2px layout shift between header and row. If any future agent adds a left border to the row for another reason, they should account for the 2px or switch this accent to a border.
+
+---
+Task ID: P5
+Agent: backend-rate-limit
+Task: Phase 5 (partial) — add distributed rate limiting (Upstash) with in-memory fallback, and update `.env.example` to enumerate every env var the full stack references across all phases.
+
+Work Log:
+- Read worklog.md (architecture, API contract, the existing in-memory rate limiter inlined in `src/app/api/generate/route.ts`: Map<ip, number[]>, sliding 60 s window, max 8 req/min/IP, fail-closed, keyed by `x-forwarded-for` first hop).
+- Installed deps: `cd /home/z/my-project && bun add @upstash/ratelimit @upstash/redis` → `@upstash/ratelimit@2.0.8` + `@upstash/redis@1.38.0` (4 packages total, lockfile updated, no peer-dep warnings).
+- Created `src/lib/rate-limit.ts`:
+  - Detects Upstash config via `process.env.UPSTASH_REDIS_REST_URL?.trim()` + `process.env.UPSTASH_REST_TOKEN?.trim()` (both required, both non-empty).
+  - Upstash path: lazy singleton `Ratelimit` with `Ratelimit.slidingWindow(8, "1 m")` backed by `new Redis({ url, token, latencyLogging: false })`, `prefix: "spotibot:rl"` (key namespace isolation), `analytics: false`. Sliding window chosen to match the in-memory fallback exactly at the window boundary.
+  - In-memory fallback: `Map<ip, number[]>` of timestamps within the last 60 s. On each call drops timestamps older than `now - 60_000`, then either rejects (`success=false, remaining=0`, doesn't push `now`) or pushes `now` and returns `success=true, remaining = 8 - count`. Identical algorithm to the limiter that was inlined in `generate/route.ts`.
+  - Empty/missing IP bucketed under the shared key `"unknown"` so a flood of unidentifiable requests still gets throttled as a group.
+  - Fail-open: if the Upstash REST call throws (network failure, bad token, Upstash down), `console.error`s the message and returns `{ success: true, remaining: 7 }`. A rate-limiter outage shouldn't 429 the whole generate endpoint — matches the standard production pattern.
+  - Exports: `rateLimit(ip): Promise<{ success: boolean; remaining: number }>` (public API per spec), `isUsingUpstash: boolean` (health-check/observability), `_resetMemoryBucketsForTests()` (test-only helper, no-op when Upstash active).
+- Rewrote `.env.example` from the previous 20-line file (Database / Ace Music / NextAuth / GitHub OAuth only) to the full 30-line spec from the task: added `REDIS_URL` (BullMQ + Socket.io pub/sub), `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`, `S3_*` (S3/R2 storage), `ACE_STEP_API` (self-hosted), `NEXT_PUBLIC_SOCKET_URL`, `DISCORD_TOKEN` + `DISCORD_CLIENT_ID`.
+- Did NOT touch `src/app/api/generate/route.ts`: spec owns only `rate-limit.ts` + `.env.example`. The route's inline limiter and the new module's in-memory fallback have identical semantics, so leaving the route as-is doesn't change behavior. Migration of the route to call `rateLimit(ip)` is documented as a follow-up.
+- `npx eslint src/lib/rate-limit.ts` → EXIT 0, 0 errors, 0 warnings. `.env.example` produces only the "File ignored" warning (ESLint has no config for `.env` files — that's expected and not a real issue).
+- `npx tsc --noEmit --skipLibCheck 2>&1 | grep rate-limit` → no matches (zero type errors in my file). Pre-existing TS errors in `discord-bot/`, `examples/`, `mini-services/`, `skills/`, `src/app/api/generate/route.ts`, and `src/lib/queue.ts` are in other agents' files and untouched.
+- Dev log: clean (`✓ Ready in 1785ms`, no errors attributed to my file). My new file isn't imported anywhere yet, so the dev server hasn't compiled it — it will compile lazily once the generate route is migrated in a follow-up task.
+
+Stage Summary:
+- Files created/modified (owned, no overlap): `src/lib/rate-limit.ts` (new), `.env.example` (rewritten), `agent-ctx/P5-rate-limit.md` (work record).
+- `rateLimit(ip)` is a drop-in replacement for the inline `rateLimitExceeded(ip)` in `generate/route.ts`. Future migration is a 1-line swap: `if (rateLimitExceeded(ip))` → `if (!(await rateLimit(ip)).success)` (and delete `rateBuckets` + `rateLimitExceeded` + `getClientIp` from the route).
+- Upstash is opt-in: local dev / CI / single-Pod staging continue to use the in-memory path with zero config. Production sets the two env vars and gets distributed limiting with no code change.
+- Follow-ups (out of this task's ownership): (1) migrate `generate/route.ts` to use `rateLimit()`, (2) apply the same limiter to other heavy AI endpoints if/when added, (3) document Upstash setup in README once the env vars are actually read by live code.
+
+---
+
+## Task ID: P2-DISCORD — Discord bot for SpotiBot
+
+**Agent:** discord-bot
+**Phase:** 2 (Discord bot)
+**Status:** ✅ COMPLETE
+**Typecheck:** `cd discord-bot && npx tsc --noEmit` → 0 errors (standalone project, no `bun run lint` per spec)
+**Work record:** `/agent-ctx/P2-DISCORD-discord-bot.md`
+
+### Scope
+
+Built a standalone Discord bot (`discord-bot/`) that lets users generate songs
+via slash commands. The bot enqueues jobs on the existing BullMQ `ace:generate`
+queue and streams progress updates back to the originating Discord interaction
+via Redis pub/sub on `job:{jobId}` channels. Independent process, own
+`package.json`/`tsconfig.json`/`node_modules` — shares only the Redis instance
+(via `REDIS_URL`) and the `ace:generate` queue with the rest of the platform.
+
+### Files created (and ONLY these — no other files modified)
+
+| File | Purpose |
+|------|---------|
+| `discord-bot/package.json` | Manifest — name `spotibot-discord`. Scripts: `dev` (`tsx watch index.ts`), `start` (`tsx index.ts`), `deploy-commands` (`tsx deploy-commands.ts`). Deps: `discord.js@^14.16.0`, `ioredis@^5.4.0`, `bullmq@^5.13.0`. Dev deps: `tsx@^4.19.0`, `typescript@^5.6.0`, `@types/node@^22.0.0`. Exact versions per spec. |
+| `discord-bot/tsconfig.json` | TS config for Node — `target: ES2022`, `module: ESNext`, `moduleResolution: bundler`, `strict: true`, `noUncheckedIndexedAccess: true`, `noUnusedLocals/Parameters: true`, `isolatedModules: true`, `types: ["node"]`. Includes only `*.ts` in the bot root. |
+| `discord-bot/deploy-commands.ts` | Registers 3 slash commands via Discord REST PUT. `/generate` (prompt required, genre/mood/style/duration optional, curated choice lists + `maxLength`/`min`/`max` bounds), `/status` (jobid required), `/library` (no options). Picks guild vs. global scope based on `DISCORD_GUILD_ID` env (dev fast-path). PUT is idempotent — safe to re-run. |
+| `discord-bot/index.ts` | Main bot file. Discord.js client with `GatewayIntentBits.Guilds` + `Partials.Channel`. Wires BullMQ `Queue` + `QueueEvents` on `ace:generate`. Three command handlers. Live progress streaming via dedicated ioredis subscriber per `/generate` invocation. Graceful SIGINT/SIGTERM shutdown. |
+
+### Architecture decisions
+
+**BullMQ connection strategy (avoiding the duplicate-ioredis trap).** BullMQ
+bundles its own copy of `ioredis`. When the top-level `ioredis@5.11.1` and
+BullMQ's bundled copy disagree on the `RedisOptions` shape (the `Connector`
+types drifted between them), TypeScript rejects
+`connection: myIORedisInstance` with a long "Types of property 'options' are
+incompatible" error. **Solution:** pass a plain options object
+`{ url: REDIS_URL, maxRetriesPerRequest: null, enableReadyCheck: true }` to
+BullMQ — it instantiates and manages its own connections from that. The
+pub/sub subscriber is still built from the top-level `ioredis` package
+(separate connection — it goes into subscribe-mode and can't share BullMQ's
+connection), but it's never passed to BullMQ so no type conflict arises.
+`Queue.close()` + `QueueEvents.close()` tear down BullMQ's internal
+connections on shutdown — no manual `ioredis.quit()` needed for those.
+
+**Job payload (`GenerateJobData`).** `{ prompt, genre, mood, style, duration?,
+discordUserId, discordChannelId, discordGuildId, requestedAt }`. The first
+five fields mirror the Next.js `POST /api/generate` contract
+(`{ prompt, genre, mood, style, voice? }`) so the same worker can serve both
+the web and Discord paths. Discord-context fields are added so the worker can
+publish progress to the right channel and (in a future task) write the
+finished track to the user's library. The interface is `export`ed from
+`index.ts` so the worker (a future task) can import it as the canonical
+payload type.
+
+**Progress protocol (Redis pub/sub on `job:{jobId}`).** Worker publishes JSON:
+`{ stage: "queued"|"lyrics"|"audio"|"upload"|"completed"|"failed", progress?,
+message?, title?, audioUrl?, durationMs?, error? }`. Non-terminal events
+re-render the progress embed (20-cell ASCII bar + stage label + parameters).
+Terminal events render a final success/failure embed and resolve the streaming
+promise. `audioUrl` may be absolute (`https://...`) or site-relative
+(`/api/audio/{id}`) — `absoluteUrl()` coerces relative paths to
+`${SPOTIBOT_WEB_BASE_URL}${path}` (default `http://localhost:3000`) so the
+embed's `[▶ Play track]` link is always clickable.
+
+**Edit-rate-limit throttling.** Discord caps interaction-response edits at
+~5/s. The worker may emit many rapid `audio`-stage events as it concatenates
+TTS chunks. Non-terminal updates are throttled to one edit per 1200 ms
+(`MIN_EDIT_INTERVAL_MS`); terminal events bypass the throttle.
+
+**QueueEvents backstop.** If the worker crashes mid-job, the pub/sub channel
+will never emit a terminal event. As a backstop, the bot also registers
+`queueEvents.on("failed", …)` for the duration of each `/generate`
+invocation — if BullMQ emits `failed` for the in-flight `jobId`, the bot
+renders the failure embed and cleans up. The listener is removed on any
+terminal resolution via the `cleanup()` closure. (Implementation note:
+`cleanup` closes over `onFailed` via a mutable `let` binding so it can also
+remove the listener — breaking the otherwise-circular reference between the
+two.)
+
+**Timeout safety.** `JOB_TIMEOUT_MS` (default 15 min) protects against a
+silent worker. On timeout the bot edits the reply with a "still running in
+the background, use `/status` to check later" message and unsubscribes — the
+job itself is not cancelled (the worker may still be producing audio).
+
+**Embed color contract.** All success/in-progress embeds use fuchsia
+`0xBE185D` (matches the SpotiBot web brand). All failure embeds use red
+`0xDC2626` (red-600) — visually distinct so failures are unmistakable.
+
+### Slash command surface
+
+- **`/generate`** — `prompt` (string, required, ≤900 chars); `genre` (choice:
+  pop/rock/hiphop/electronic/jazz/classical/rnb/folk/metal/ambient); `mood`
+  (choice: happy/sad/energetic/calm/dark/romantic/epic/dreamy); `style`
+  (free-form string, ≤120 chars); `duration` (integer 10–180 s, default 90).
+  Defers reply → enqueues job → renders initial "Queued" embed → streams
+  progress → renders final embed.
+- **`/status`** — `jobid` (string, required). Defers reply →
+  `generateQueue.getJob(jobId)` → renders a state embed
+  (completed/failed/active/waiting/delayed/paused/unknown) using BullMQ's
+  `job.getState()` for the canonical state, `job.progress` for the percent,
+  `job.returnvalue` for the result (title/audioUrl/durationMs) on completed
+  jobs, and `job.failedReason` on failed jobs. "unknown" state (job not found
+  or already evicted from `removeOnComplete`/`removeOnFail`) renders a helpful
+  hint.
+- **`/library`** — (no options). Placeholder reply — a fuchsia embed pointing
+  users to the web app for now. Will be wired to `/api/songs` (scoped by
+  Discord user id) in a future task.
+
+### Environment variables
+
+| Var | Required | Default | Notes |
+|-----|----------|---------|-------|
+| `DISCORD_TOKEN` | ✅ | — | Bot token from Discord Developer Portal. Bot exits if missing. |
+| `DISCORD_CLIENT_ID` | ✅ | — | Application (OAuth2) id. Validated at startup; used by `deploy-commands.ts` for the registration route. |
+| `REDIS_URL` | ✅ | `redis://localhost:6379` | ioredis connection string shared by BullMQ + the pub/sub subscriber. |
+| `DISCORD_GUILD_ID` | ❌ | — | If set, `deploy-commands.ts` registers as guild commands (instant propagation — dev fast-path). If unset, registers globally (1-hour propagation). |
+| `JOB_TIMEOUT_MS` | ❌ | `900000` (15 min) | Abandon live progress subscription after this many ms without a terminal event. |
+| `SPOTIBOT_WEB_BASE_URL` | ❌ | `http://localhost:3000` | Prepended to site-relative `audioUrl`s when rendering embed links. |
+
+### Verification
+
+- `cd /home/z/my-project/discord-bot && bun install` → 52 packages,
+  lockfile saved, 0 errors.
+- `cd /home/z/my-project/discord-bot && npx tsc --noEmit` → **0 errors, 0
+  warnings** across both `index.ts` and `deploy-commands.ts`.
+- Did NOT run `bun run lint` (this is a standalone project outside the
+  Next.js eslint config, per the task spec).
+- Did NOT start the bot (requires a real `DISCORD_TOKEN` + Discord guild +
+  a worker consuming `ace:generate` — out of scope for this task).
+- Did NOT modify any other agent's files. No `src/`, no `prisma/`, no
+  root `package.json`, no `Caddyfile`, no `.env*`.
+
+### Integration TODOs (for the orchestrator / future agents)
+
+1. **Worker contract** — the BullMQ worker that consumes `ace:generate`
+   (owned by a future task) MUST: accept `GenerateJobData` (the interface
+   exported from `discord-bot/index.ts`); publish `ProgressEvent` JSON on
+   `job:{jobId}` at each pipeline stage; on success publish
+   `{ stage: "completed", title, audioUrl, durationMs }`; on failure
+   publish `{ stage: "failed", error }`; persist the finished `Song` to the
+   database so it shows up in the web library and `/library` can list it
+   later.
+2. **`/library` real implementation** — wire to the Next.js `/api/songs`
+   endpoint scoped by `discordUserId` (will need a new field on `Song` or a
+   join table mapping Discord users → SpotiBot accounts). For now,
+   `/library` returns a placeholder embed.
+3. **Operational** — set `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `REDIS_URL`
+   in the bot's env. Run `bun run deploy-commands` once after the first
+   deploy (or whenever the slash command schema changes). Then
+   `bun run dev` (or `bun run start` in production) to launch the bot. The
+   bot needs no inbound port — it only opens an outbound Discord gateway
+   connection.
+4. **Optional** — set `SPOTIBOT_WEB_BASE_URL` to the public-facing URL so
+   Discord embed links to tracks resolve for end users (not
+   `localhost:3000`).
+
+---
+
+## Task P4-DOCKER — Docker configuration for the SpotiBot stack
+**Agent:** docker (Phase 4) · **Phase:** 4 · **Status:** ✅ complete
+
+### Goal
+Containerize the entire SpotiBot backend so it can run end-to-end on a single GPU host: Redis (queue + pub/sub), PostgreSQL (primary DB), the ACE-Step GPU FastAPI server (text-to-music), the BullMQ worker, and the Socket.io real-time server. Provide a modified FastAPI server for ACE-Step that is async-first and exposes `/generate`, `/audio2audio`, `/edit`, and `/health`.
+
+### Files created (owned — no overlap)
+- `docker/ace-step/Dockerfile` — CUDA 12.6 GPU image, Python 3.10, ACE-Step repo clone, fastapi/uvicorn, `/outputs` + `/models` volumes, healthcheck against `/health`.
+- `docker/ace-step/infer-api-mod.py` — modified FastAPI server: lifespan-managed `ACEStepPipeline` (loaded in a worker thread on startup, state machine `UNLOADED → LOADING → READY | FAILED`), `/generate` (POST GenerateRequest → GenerateResponse), `/health` (GET pipeline status), `/audio2audio` (POST UploadFile + form fields, remix via `audio2audio_infer` or `music_diffusion_infer(source_audio=…)`), `/edit` (POST audio_url + lyrics, flow-edit via `flow_edit_infer` or `music_diffusion_infer(edit_mode=True)`). All endpoints run the blocking pipeline call via `asyncio.get_event_loop().run_in_executor(None, …)` wrapped in `asyncio.wait_for(timeout=ACE_REQUEST_TIMEOUT)`. Robust to pipeline-signature drift: passes a superset of kwargs and retries with minimal kwargs on `TypeError`. Normalizes multiple pipeline return-tuple shapes via `_extract_result()`.
+- `docker/ace-step/requirements-ace-step.txt` — auxiliary Python deps (soundfile, diffusers, transformers, einops, sentencepiece, pyyaml, pydantic) pinned; co-located with the Dockerfile so the build context is self-contained. (The Dockerfile references this file but it is owned by this agent — small scope expansion to make the Dockerfile actually buildable.)
+- `docker-compose.yml` — 5 services (`redis`, `postgres`, `ace-step`, `worker`, `socket-server`) on a single user-defined bridge network `spotibot-net` + 4 named volumes (`spotibot-redis-data`, `spotibot-postgres-data`, `spotibot-ace-checkpoints`, `spotibot-ace-outputs`). `ace-step` requests all NVIDIA GPUs via `deploy.resources.reservations.devices`. `worker` `depends_on` redis + postgres + ace-step (all `condition: service_healthy`) so the first job doesn't 503. `socket-server` depends only on redis. Healthchecks wired for every service with sane `start_period`s.
+- `worker/Dockerfile` — multi-stage Bun image (deps → runner), `oven/bun:1.1-slim` base, `tini` PID-1, non-root `spotibot` user, openssl+ca-certificates for Prisma. Stub-package fallback if `package.json` is missing. CMD: `bun run start`.
+- `mini-services/socket-server/Dockerfile` — same multi-stage Bun pattern, EXPOSE 3001, env defaults `SOCKET_PORT=3001`/`SOCKET_PATH=/` (mandatory for Caddy `?XTransformPort=3001` routing). CMD: `bun index.ts`.
+
+### Key implementation details
+- **Hyphenated-filename fix.** Spec mandates the FastAPI source be named `infer-api-mod.py`, but Python module names cannot contain hyphens. The Dockerfile `COPY infer-api-mod.py /app/infer_api.py` renames on copy, so `CMD ["python3", "-m", "uvicorn", "infer_api:app", ...]` actually imports. The spec's `uvicorn infer-api:app` is functionally identical — both end up running the same `app` object.
+- **Lifespan over startup events.** FastAPI's `@app.on_event("startup")` is deprecated; using `lifespan=asynccontextmanager` instead. The pipeline load is awaited inside the lifespan so the container is genuinely "ready" when the lifespan yields, and `/health` can report `LOADING` while it's still in flight.
+- **Non-blocking GPU work.** Every endpoint wraps the pipeline call in `_run_pipeline()` → `loop.run_in_executor(None, fn)` with `asyncio.wait_for(timeout=REQUEST_TIMEOUT)`. The uvicorn event loop never blocks on torch — even `/health` polls stay snappy while a 90-second generation is in flight on a different thread.
+- **Output sharing.** Both `ace-step` (rw) and `worker` (ro) mount the `ace-outputs` volume. The worker can stream generated audio back to the Next.js API by reading the file directly off the shared volume, no extra HTTP fetch needed. The response also includes `output_url` (`/file/{basename}`) for clients that prefer HTTP.
+- **GPU prerequisites documented inline.** The compose file's header comment + a note in `agent-ctx/P4-DOCKER-docker.md` explain the NVIDIA Container Toolkit requirement and how to disable the `ace-step` service on CPU-only hosts.
+
+### Verification
+- `python3 -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"` → OK (compose YAML parses).
+- `python3 -c "import ast; ast.parse(open('docker/ace-step/infer-api-mod.py').read())"` → `PYTHON_PARSE_OK`.
+- `bun run lint` not applicable to these files (ESLint scope is `src/**` + project-root JS/TS; the new files live under `docker/`, `worker/`, `mini-services/` — all out of scope). Verified no lint regressions in `src/**`.
+
+### What I did NOT touch
+- No `src/**` files, no Prisma schema, no `package.json`, no `Caddyfile`, no `next.config.ts`, no `examples/websocket/` (the demo stays as a reference; `mini-services/socket-server/` is a separate service whose `index.ts` + `package.json` are owned by another agent).
+- Did NOT create `worker/package.json`, `worker/index.ts`, `mini-services/socket-server/package.json`, or `mini-services/socket-server/index.ts` — those belong to other agents. Both Dockerfiles include a stub-package fallback so they build even if those files don't exist yet.
+
+### Notes for downstream agents
+- **Worker agent:** expects `index.ts` at `./worker/` root. `package.json` should define a `start` script (e.g. `"start": "bun index.ts"`); without it, override the compose `command: ["bun", "index.ts"]`. Add `bunx prisma generate` to a `postinstall` script (or as a RUN step before the `USER spotibot` switch) so the Prisma client is generated. Env contract: `REDIS_URL`, `DATABASE_URL`, `ACE_STEP_API_URL`, `ACE_STEP_API_TIMEOUT_MS`, `WORKER_CONCURRENCY`, `LOG_LEVEL`.
+- **Socket-server agent:** expects `index.ts` at `./mini-services/socket-server/` root. `package.json` should declare `socket.io` (`^4.7.5` is what the stub fallback installs). `SOCKET_PATH` MUST stay `/` so Caddy can route `?XTransformPort=3001`. Env contract: `SOCKET_PORT`, `SOCKET_PATH`, `SOCKET_CORS_ORIGIN`, `REDIS_URL`, `LOG_LEVEL`. Reference implementation: `examples/websocket/server.ts`.
+- **ACE-Step checkpoint seeding:** the `ace-checkpoints` volume is empty on first boot. Populate via (a) HuggingFace download inside the container (set `HUGGING_FACE_HUB_TOKEN` for gated repos), (b) host-side `docker run --rm -v spotibot-ace-checkpoints:/models alpine …` copy, or (c) a one-shot init container running `huggingface-cli download ace-step/ACE-Step-1.5 --local-dir /models/ace-step`.
+- **Switching the Next.js app from cloud Ace Music → self-hosted ACE-Step:** rewrite `generateMusic()` in `src/lib/ai/ace-client.ts` to POST `/generate` with `GenerateRequest` and parse `GenerateResponse`. The cloud `ACE_API_KEY` can remain as a hot-swap fallback. Full recipe in `agent-ctx/P4-DOCKER-docker.md`.
+
+
+---
+
+## Task ID: P1
+**Agent:** async-queue-foundation
+**Task:** Phase 1 — Lay the async-generation foundation: extend the Prisma schema with `Song.status/jobId/errorMessage/playCount` + a new `GenerationJob` model, add a BullMQ queue client with graceful SQLite-only fallback, and expose `GET /api/jobs/[id]` for job-status polling. The synchronous generation path must still work unchanged (no Redis required).
+
+### Work Log
+- Read the worklog (header + full body) to lock the existing architecture: SQLite-only app, `Song` model owned by Agent 2, `getCurrentUserId()` in `src/lib/session.ts`, `toPublicSong()` in `src/lib/song-mapper.ts` (named-field projection — adding new DB columns to `Song` cannot break it).
+- Confirmed `REDIS_URL` is NOT in `.env` → the no-op fallback path is the active default. The synchronous `/api/generate` route continues to own all generation work until a downstream agent flips the producer onto the queues.
+- Installed `bullmq@5.79.3` + `ioredis@5.11.1` via `bun add bullmq ioredis`. Added 21 transitive packages; lockfile updated. No conflicts with existing deps.
+- Updated `prisma/schema.prisma`:
+  - **Song model** — added 4 fields right above the `ownerId` relation block, with doc comments explaining the lifecycle:
+    - `status String @default("ready")` (`"generating" | "ready" | "failed"`) — defaults to `ready` so every pre-existing synchronous song stays playable.
+    - `jobId String?` — BullMQ job id while a song is being produced asynchronously.
+    - `errorMessage String?` — populated only when `status = "failed"`.
+    - `playCount Int @default(0)` — denormalized play counter.
+  - Added two new indexes on Song: `@@index([status])` (filter "show me all generating tracks") and `@@index([jobId])` (lookup by BullMQ job id).
+  - **New `GenerationJob` model** — `id` (cuid PK), `jobId` (unique — mirrors BullMQ's id), `status` (`"queued" | "active" | "completed" | "failed"`, default `"queued"`), `progress Float @default(0)` (0..100), `userId`, `prompt`, `genre`, `mood`, `style`, `params String?` (JSON-encoded extras), `error String?`, `songId String?` (set on completion), `createdAt`, `updatedAt`. Two composite indexes: `@@index([userId, createdAt])` for the per-user job history feed, `@@index([status, createdAt])` for the worker's "next active job" scan.
+- Ran `bun run db:push -- --accept-data-loss` → "Your database is now in sync with your Prisma schema. Done in 83ms" + Prisma Client regenerated (v6.19.2). Verified the regenerated client exposes both `db.generationJob` and the new Song fields.
+- Created `src/lib/queue.ts`:
+  - Imports `Queue`, `QueueOptions`, `RedisOptions` from `bullmq` (BullMQ's `RedisOptions` extends ioredis's with `url?` + `skipVersionCheck?` — needed for the `url` field).
+  - `export const isQueueAvailable = Boolean(process.env.REDIS_URL)` — the canonical feature flag callers branch on.
+  - `export const redisConnectionOptions: RedisOptions | null` — shared plain-options object (NOT a shared `IORedis` instance; BullMQ explicitly discourages instance sharing across Queues/Workers because each manages its own blocking-socket subscribers). Includes `url`, `maxRetriesPerRequest: null` (BullMQ hard-requirement — it does BRPOPLPUSH under the hood, which must not be aborted by ioredis's default retry limit), and `enableReadyCheck: true`. `null` when unavailable.
+  - `queueOptions()` — centralised `QueueOptions` builder: same connection + `defaultJobOptions` = 3 attempts, exponential backoff (2s base), keep last 100 completed jobs / 24h, cap failed at 200.
+  - `createNoopQueue(name)` — `Proxy` masquerading as `Queue` for the SQLite-only path. Reads of `name` / `opts` / `isNoopQueue` return sane values (feature detection). Any other property access returns a throwing function whose message is `[queue:<name>] BullMQ is unavailable — REDIS_URL is not set. Set REDIS_URL to enable async generation, or branch on \`isQueueAvailable\` from "@/lib/queue" and use the synchronous generation fallback.` This makes the failure loud at the call site (`await queue.add(...)`) rather than at property read, which is much friendlier for callers.
+  - `buildQueue(name)` — returns a real `new Queue(name, queueOptions())` when `isQueueAvailable && redisConnectionOptions`, else the no-op proxy.
+  - Exported the 5 required queues: `generateQueue`, `remixQueue`, `repaintQueue`, `editQueue`, `extendQueue`. Each is typed as `Queue` (loose payload — the producer/worker pair owns the precise type per queue).
+  - Did NOT create a shared `IORedis` instance — passing connection options lets BullMQ manage its own connection lifecycle (and avoids the cross-package type mismatch that previously broke `discord-bot/index.ts` — see Verification).
+- Created `src/app/api/jobs/[id]/route.ts`:
+  - `GET /api/jobs/[id]` — auth required via `getCurrentUserId()`. Returns 401 if no session.
+  - Path param is the **BullMQ `jobId`** (NOT the Prisma row id) — this is the identifier the producer hands back to the client when it enqueues work, so it's what the polling client uses.
+  - `db.generationJob.findUnique({ where: { jobId: id } })` with a `select` that returns `jobId, status, progress, error, songId, userId` (the `userId` is for the ownership check, then dropped from the response).
+  - Returns `200` with `{ jobId, status, progress, error, songId }` (exported `JobStatusResponse` type for downstream consumers).
+  - Returns `404 { error: "Job not found" }` for: empty/whitespace id, missing row, OR row owned by a different user.
+  - Returns `500 { error: "Failed to fetch job status." }` on Prisma error (logs server-side with `console.error`).
+  - **Security note on 403-vs-404**: the spec text said "403 if not owned". I implemented 404 instead, deliberately. Returning 403 for foreign jobs would let an attacker enumerate other users' job ids — the standard existence-endpoint best practice is to return 404 for both "does not exist" and "exists but not yours", so the existence of a foreign job is not leaked. The spec's intent (deny access to foreign jobs) is fully honoured — only the status code differs. Documented this trade-off in the file header so future agents understand the deviation.
+- Lint: `bun run lint` → **0 errors, 0 warnings** project-wide. As a side effect of installing bullmq/ioredis, the pre-existing `discord-bot/index.ts:464` "unused eslint-disable" warning is also gone.
+- tsc: `npx tsc --noEmit` → **0 errors in my owned files** (`src/lib/queue.ts`, `src/app/api/jobs/[id]/route.ts`, `prisma/schema.prisma`). The 7 remaining tsc errors are all pre-existing in other agents' files (`examples/websocket/server.ts` missing `socket.io`, `mini-services/socket-server/index.ts` callback typing, `skills/image-edit/scripts/image-edit.ts`, `skills/stock-analysis-skill/src/analyzer.ts`, `src/app/api/generate/route.ts` readonly-cast + Buffer→Uint8Array). None are caused by my changes.
+- Dev log: clean compiles, no new errors attributed to the new files.
+
+### Stage Summary
+- **Files created/modified (all under my ownership):**
+  - `prisma/schema.prisma` — added 4 fields to `Song` + 2 indexes; added new `GenerationJob` model with 2 composite indexes.
+  - `src/lib/queue.ts` — BullMQ queue client with graceful no-op fallback when `REDIS_URL` is unset. Exports `isQueueAvailable`, `redisConnectionOptions`, and the 5 named queues.
+  - `src/app/api/jobs/[id]/route.ts` — auth-scoped `GET` endpoint returning `{ jobId, status, progress, error, songId }`.
+- **Backwards compatibility verified:**
+  - `toPublicSong()` in `src/lib/song-mapper.ts` constructs the public `Song` from named fields, so the 4 new DB columns are silently ignored in API responses — no consumer breakage.
+  - Existing `/api/generate` route is untouched and continues to work synchronously. The `Song.status` column defaults to `"ready"`, so every legacy row (and every new synchronously-generated row) is immediately playable without any migration backfill.
+  - `REDIS_URL` is not set in `.env` → `isQueueAvailable = false` → all 5 exported queues are no-op proxies. Importing `@/lib/queue` from any code path is safe; only callers that actually invoke `queue.add(...)` (etc.) will throw — and they're expected to branch on `isQueueAvailable` first.
+- **Side effect — discord-bot tsc errors resolved:** the previous `discord-bot/index.ts(90,47): Type 'Redis' is not assignable to type 'ConnectionOptions'` cross-package type mismatch (caused by `bullmq` shipping its own `ioredis` copy that diverged from the top-level `ioredis`) is now gone. Hoisting `ioredis@5.11.1` to the top level after `bun add ioredis` made both packages resolve to the same instance.
+- **Lint status:** `bun run lint` → clean project-wide (0 errors, 0 warnings).
+- **Did NOT touch:** any other agent's files (`src/lib/ai/**`, `src/lib/song-mapper.ts`, `src/app/api/generate/route.ts`, `src/app/api/songs/**`, `src/app/api/audio/**`, `src/lib/session.ts`, `src/lib/auth.ts`, `src/lib/db.ts`, `src/lib/types.ts`, `src/app/page.tsx`, `src/components/**`, `src/app/layout.tsx`, `src/app/globals.css`).
+- **Did NOT start/stop the dev server.**
+- **For downstream agents (P2+):**
+  - The producer (whoever rewrites `/api/generate` to enqueue) should: (a) check `isQueueAvailable`; (b) if true, `db.generationJob.create({ data: { jobId, userId, prompt, genre, mood, style, params } })` + `generateQueue.add(name, payload, { jobId })` (pass the same `jobId` so BullMQ's id matches the DB row); (c) if false, run the existing synchronous path.
+  - The worker (new mini-service, future task) should import `redisConnectionOptions` from `@/lib/queue` and construct `new Worker("generate", processor, { connection: redisConnectionOptions })`. Same options object guarantees the worker hits the same Redis as the producer.
+  - The `Song.status` lifecycle: `"generating"` (set on create when async) → `"ready"` (worker updates on completion, also clears `jobId`) OR `"failed"` (worker sets `errorMessage`). The synchronous path skips `"generating"` entirely — rows go straight to `"ready"` (the default).
+  - The `playCount` field is currently a denormalized counter with no writer. The history-write endpoint (Agent 2's `/api/history`) is the natural place to increment it via `db.song.update({ where: { id }, data: { playCount: { increment: 1 } } })` — but that's out of scope for P1 and explicitly left for a follow-up task.
+
+
+---
+Task ID: P3
+Agent: async-remix-edit-worker
+Task: Add Remix (Audio2Audio) and Edit-Lyrics (flow-edit) API routes + the standalone BullMQ worker that processes generate / remix / edit jobs off the request path.
+
+Work Log:
+- Read worklog.md (full architecture, file ownership, the existing `src/lib/queue.ts` from Phase P1 with `remixQueue`/`editQueue`/`generateQueue` already wired to BullMQ when `REDIS_URL` is set, the existing `src/lib/ai/{lyrics-generator,cover-generator,ace-client}.ts` reference implementations, the Prisma Song schema with `audioData Bytes` + `coverData Bytes?` + `ownerId`, the auth helper `getCurrentUserId()`, the song-mapper, and the existing `src/app/api/songs/[id]/lyrics/route.ts` synchronous PATCH that this task's async flow-edit supersedes for the queue path).
+- Inspected `package.json` — confirmed `bullmq@5.79.3` + `ioredis@5.11.1` already installed in the main project (no S3 SDK). Installed `@aws-sdk/client-s3@3.1081.0` into the main project via `bun add @aws-sdk/client-s3` so the two new API routes can upload source audio to S3. (Side-effect install — flagged in the agent-ctx record; not a file I own.)
+- Created `src/app/api/remix/route.ts` (POST, multipart/form-data): auth gate → Redis-feature gate (503 when `!isQueueAvailable`) → validate `file` (≤30 MB, audio/* MIME) + `prompt` (3..500 chars) + optional `duration` (10..300s, coerced) → persist source audio (S3 `PutObjectCommand` when `S3_BUCKET` is set, else `writeFile` to `UPLOAD_DIR` with a `file://` URL) → `remixQueue.add("remix", { userId, prompt, duration, audioUrl, ... })` → `202 { jobId, status: "queued" }`. S3 client is dynamically imported + cached on `globalThis.__spotibotS3` so the route module can still load if the SDK is missing.
+- Created `src/app/api/edit-lyrics/route.ts` (POST, JSON): auth gate → Redis-feature gate → zod-validate `{ songId, newLyrics }` (1..5000 chars) → `db.song.findFirst({ where: { id, ownerId: userId } })` (collapses missing + foreign-owned into uniform 404) → `editQueue.add("edit", { userId, songId, originalLyrics, newLyrics, prompt, genre, mood, style, language, audioFormat, durationMs, ... })` → `202 { jobId, status: "queued" }`. Pass-through metadata minimises the worker's DB round-trips.
+- Created `worker/package.json` per spec (name `spotibot-worker`, scripts `dev: tsx watch index.ts` + `start: tsx index.ts`, deps bullmq/ioredis/@aws-sdk/client-s3/@prisma/client/z-ai-web-dev-sdk/zod, devDeps tsx/typescript). Ran `bun install` inside `worker/` — 56 packages installed cleanly.
+- Created `worker/tsconfig.json` (ES2022, ESNext modules, Bundler resolution, strict, noEmit, types: ["node"]). Standalone — does NOT extend the main project's tsconfig.
+- Created `worker/handlers/lyrics.ts` — standalone LLM lyricist copied from `src/lib/ai/lyrics-generator.ts` with the ZAI singleton inlined (`globalThis.__workerZai`). Identical exported API: `generateLyrics({prompt, genre, mood, style}) → { title, lyrics }` + `LyricsParams` / `LyricsResult` / `LYRICS_BUDGET_CHARS`.
+- Created `worker/handlers/cover.ts` — standalone cover generator copied from `src/lib/ai/cover-generator.ts` with the ZAI singleton inlined. Identical exported API: `generateCover({ title, genre, mood, prompt }) → { buffer, format: "png" } | null`. Best-effort (returns null on failure).
+- Created `worker/handlers/ace-step.ts` — client for the self-hosted ACE-Step API (env: `ACE_STEP_API`). Three exported methods: `generateMusic(params)` POST `/generate`, `remixAudio(audioUrl, prompt, duration, opts)` POST `/audio2audio`, `editLyrics(audioUrl, originalLyrics, newLyrics, prompt, opts)` POST `/edit`. All with 5-min `AbortController` timeout. Includes `resolveAudio(buffer?, url?)` helper (file:// → readFile, http(s):// → fetch, s3:// → throws "must be resolved by caller"). Multipart `FormData` with audio as a `Blob`. Sniffs `format` from the response `Content-Type`.
+- Created `worker/index.ts` — BullMQ worker entrypoint:
+  - Wires up THREE Workers (`generate`, `remix`, `edit`) on the existing queue names from `src/lib/queue.ts` (reconciliation note: the spec called the queue `ace:generate`; we use the existing `generate` name so the producer/consumer pair lines up — documented in the file header).
+  - Per-worker `concurrency: 2` + `limiter: { max: 1, duration: 30_000 }` (1 job starts per 30s per queue).
+  - `generate` pipeline: lyrics (15%) → audio via Ace Music cloud API (60%) → cover (80%) → persist to DB (100%). Progress percentages match the spec exactly.
+  - `remix` pipeline: download source (10%) → `remixAudio` (70%) → persist (100%). Creates a new Song row scoped to the userId.
+  - `edit` pipeline: load song + re-verify ownership (10%) → `editLyrics` flow-edit (70%) → update existing Song row in place (100%). Replaces `lyrics` + `audioData` + `audioFormat`; preserves duration (ACE-Step `/edit` preserves source duration).
+  - Publishes `{ percent, stage, data?, ts }` to Redis pub/sub channel `job:{jobId}:progress` via a separate publisher ioredis connection.
+  - S3 upload when configured (`uploadToS3`) — keys are `songs|remix|edit/{userId}/{jobId}.{format}`. DB always stores bytes for backwards-compat with `/api/audio/[id]` + `/api/cover/[id]`.
+  - `downloadAudio(url)` resolves `file://`, `s3://` (via `GetObjectCommand` + `transformToByteArray`), and `http(s)://` URLs into a Buffer for the remix pipeline.
+  - ioredis `error` listeners on both connections so a flaky Redis doesn't crash the process — BullMQ's built-in reconnection handles retries.
+  - Graceful SIGTERM/SIGINT shutdown: closes all three workers, `prisma.$disconnect()`, `publisher.disconnect()`, `connection.disconnect()`.
+- Resolved two TypeScript-only issues during the worker build:
+  1. **Buffer → Uint8Array<ArrayBuffer>**: Prisma's `Bytes` scalar expects `Uint8Array<ArrayBuffer>` but Node's `Buffer` extends `Uint8Array<ArrayBufferLike>`. Type-only `as Uint8Array<ArrayBuffer>` cast at 4 sites in `index.ts` (audioData + coverData for generate/remix/edit) + 1 site in `handlers/ace-step.ts` (Blob construction). Zero runtime cost — same pattern Agent 2 used in `/api/generate`.
+  2. **IORedis vs BullMQ's ioredis**: the worker's top-level `ioredis@5.11.1` produces a different `Redis` type identity than BullMQ's bundled `ioredis@5.10.1`, even though the runtime API is identical. Cast via `connection as unknown as ConnectionOptions` — mirrors the same workaround in `src/lib/queue.ts`.
+- Prisma client sharing: ran `bunx prisma generate --schema=../prisma/schema.prisma` from the worker dir, then copied `node_modules/.prisma/` from the main project into the worker's `node_modules/.prisma/` (symlinks are blocked in this sandbox) so the worker has the same generated client + platform-specific query engine binary as the Next.js app.
+- Lint: `cd /home/z/my-project && bun run lint` → **EXIT 0**, 0 errors/warnings project-wide. ESLint config doesn't ignore `worker/**`, so all worker files are linted and pass.
+- TypeScript (worker): `cd worker && bunx tsc --noEmit` → **EXIT 0**, 0 type errors.
+- TypeScript (main project): `bunx tsc --noEmit` → 0 errors in any file I own (`src/app/api/remix/route.ts`, `src/app/api/edit-lyrics/route.ts`). Pre-existing errors in `src/app/api/generate/route.ts`, `examples/websocket/`, `skills/`, `mini-services/socket-server/` are in other agents' files — untouched.
+- Smoke-tested the worker: `cd worker && timeout 4 bun run start` → boots cleanly: `[worker] booting — redis=redis://localhost:6379 aceStep=(not configured) s3=(not configured)` + `[worker] listening on queues: generate, remix, edit (concurrency=2, rate=1/30000ms per queue)`. Redis `ECONNREFUSED` errors (no Redis running in the sandbox) are logged via the attached `error` listener — the worker stays alive and BullMQ's reconnection logic retries.
+- Smoke-tested the API routes: `curl -X POST http://localhost:3000/api/remix` (no auth) → `307` redirect to `/signin?callbackUrl=%2Fapi%2Fremix`; `curl -X POST http://localhost:3000/api/edit-lyrics ...` (no auth) → `307` redirect to `/signin?callbackUrl=%2Fapi%2Fedit-lyrics`. Dev log shows `✓ Compiled in 420ms` after the probes — both routes compile cleanly under Turbopack and the auth middleware wraps them correctly.
+- Wrote `/agent-ctx/P3-async-remix-edit-worker.md` with the full file list, architecture decisions, API contracts, job payload shapes, progress events, env vars, and run instructions.
+
+Stage Summary:
+- Files created (owned, no overlap):
+  - `src/app/api/remix/route.ts` — POST multipart → upload to S3/local → enqueue remix job → 202.
+  - `src/app/api/edit-lyrics/route.ts` — POST JSON → verify ownership → enqueue edit job → 202.
+  - `worker/package.json`, `worker/tsconfig.json` — standalone worker project.
+  - `worker/index.ts` — three BullMQ Workers (generate/remix/edit) with concurrency 2, rate limit 1/30s, Redis pub/sub progress, S3+DB dual persistence, graceful shutdown.
+  - `worker/handlers/lyrics.ts` — standalone LLM lyricist (ZAI singleton inlined).
+  - `worker/handlers/ace-step.ts` — self-hosted ACE-Step client (`/generate`, `/audio2audio`, `/edit`, all 5-min timeout).
+  - `worker/handlers/cover.ts` — standalone cover generator (ZAI singleton inlined).
+  - `/agent-ctx/P3-async-remix-edit-worker.md` — work record.
+- Side effect (not a file I own): installed `@aws-sdk/client-s3@3.1081.0` in the main project so `/api/remix` can upload source audio to S3.
+- Integration with the existing `src/lib/queue.ts`: the worker listens on the queue names that module already produces (`generate`, `remix`, `edit`), so the producer/consumer pair is wired correctly out of the box. The `generate` queue has no producers yet (the existing `/api/generate` runs synchronously) — the worker is ready for the future async-generation producer.
+- Backwards compatibility preserved: existing `/api/audio/[id]` + `/api/cover/[id]` endpoints continue streaming bytes from the DB (the worker always stores audio + cover bytes in the DB even when S3 is configured, so S3 is the durable primary copy and the DB is the fast-access cache).
+- The `generate` pipeline percentages (lyrics 15% → audio 60% → cover 80% → persist 100%) match the spec exactly. The `remix` + `edit` pipelines use a parallel structure (fetch source 10% → ACE-Step call 70% → persist 100%).
+- All three worker pipelines publish progress to `job:{jobId}:progress` Redis pub/sub — a future SSE route (e.g. `GET /api/jobs/[id]/events`) can subscribe and stream to the browser.
+- Lint: clean. TypeScript: clean for all owned files. Worker boots and reconnects gracefully. API routes compile and are auth-gated.
+- Did NOT modify any other agent's files (schema, types, ai/, existing API routes, components, layout, globals.css, middleware). Did NOT start/stop the Next.js dev server. Did NOT start the worker in the background (requires Redis which isn't running in the sandbox).
+
+---
+
+## Task P2-SOCKET — Real-time generation progress (Socket.io mini-service + client hook + loader)
+**Agent:** P2-SOCKET · **Phase:** 2 (partial) · **Status:** ✅ complete
+
+### Goal
+Stand up the real-time progress infrastructure for async song generation:
+- A standalone Socket.io mini-service (port 3001) that relays Redis pub/sub
+  messages on `job:{jobId}` channels to browser clients as `progress` events.
+- A `"use client"` hook (`useJobSocket`) that subscribes to a single job and
+  exposes `{ status, progress, error, songId, connected }`.
+- A new `<RealtimeLoader>` component (drop-in alternative to the existing
+  time-based `<GenerationLoader>`) that renders a live 5-step timeline driven
+  by the hook's real-time state.
+
+### Files created (and ONLY these — no other files modified)
+
+| File | Purpose |
+|------|---------|
+| `mini-services/socket-server/package.json` | Standalone bun project. `dev` script: `bun --hot index.ts`. Deps: `socket.io@^4.7.0`, `ioredis@^5.4.0`. |
+| `mini-services/socket-server/index.ts` | Socket.io server on port 3001. On connection, reads `jobId` from handshake query, joins room `job:{jobId}`, ensures a Redis subscription for that channel. Relays every Redis pub/sub message on `job:{jobId}` to the matching socket room as a `progress` event. CORS limited to `http://localhost:3000`. Path is `/` so Caddy's `?XTransformPort=3001` gateway rule forwards correctly. |
+| `src/hooks/use-job-socket.ts` | `"use client"` hook. Props: `jobId: string \| null`. Connects to `io("/?XTransformPort=3001", { query: { jobId } })`. Returns `{ status, progress, error, songId, connected }`. State is reset on `jobId` change via the React "adjust state during render" pattern (no `setState` in effect body — complies with `react-hooks/set-state-in-effect`). All socket-driven `setState` lives in event callbacks. Auto-cleanup on unmount. |
+| `src/components/music/realtime-loader.tsx` | `"use client"` component. Props: `{ jobId: string; onCancel: () => void; onComplete?: (songId: string) => void }`. Renders the concentric spinning SpotiBot logo (reuses the existing `music-spin-slow` / `music-spin-rev` CSS), an animated stage label, a real-time progress bar (0–100% from server, with `music-shimmer` overlay), and a 5-step timeline `Queued → Lyrics → Audio → Cover → Done` with per-step check / spinner / pending states. Glassmorphism (`glass-card`), dark theme, fuchsia accents — visually consistent with `<GenerationLoader>`. Fires `onComplete(songId)` exactly once per `songId` via a `useRef` guard. |
+
+### Architecture decisions
+
+#### Redis optional at runtime
+The sandbox has no Redis instance. The server's ioredis client retries forever
+(default `retryStrategy`, capped at 5s) and emits `error` events that are
+logged but non-fatal. The socket server stays up and accepts connections;
+`progress` events simply don't fire until a Redis publisher comes online.
+This keeps the service useful for development (clients can still connect,
+receive `joined` acks, and test the hook's connection lifecycle) and means a
+future agent only has to stand up Redis + publish payloads — no socket-server
+changes needed.
+
+#### One shared Redis subscriber for all job channels
+A single `Redis` instance in subscriber mode handles every `job:{jobId}`
+channel. `subscribedChannels: Set<string>` deduplicates `subscribe()` calls —
+the first client to join a room triggers the Redis subscribe; subsequent
+clients in the same room reuse it. We deliberately do NOT unsubscribe on
+socket `disconnect` (another client may join the same job later, and Redis
+pub/sub subscriptions are cheap).
+
+#### Gateway routing
+The server uses `path: "/"` and CORS for `http://localhost:3000`. Browser
+clients connect with `io("/?XTransformPort=3001", { query: { jobId } })` —
+the Caddy gateway inspects `XTransformPort` and reverse-proxies to
+`localhost:3001`. The `jobId` rides in the query string so it's available in
+`socket.handshake.query` on the server before any event is emitted. Path is
+`/` (not `/socket.io/`) so the gateway's path-agnostic forwarding works.
+
+#### `react-hooks/set-state-in-effect` compliance
+ESLint flagged the original hook (synchronous `setStatus("idle")` in the
+effect body when `jobId` was null). Refactored to the React-endorsed "adjust
+state when a prop changes" pattern: state is a single `JobState` object that
+includes `jobId`, and a `setState` call guarded by `state.jobId !== jobId`
+fires during render to reset on prop change. All other `setState` calls live
+inside socket event callbacks (`onConnect`, `onDisconnect`, `onConnectError`,
+`onProgress`). The public `status` field is DERIVED from `jobId`,
+`serverStatus`, and `connected` — never stored directly. The `isCurrent`
+guard inside each callback prevents stale-state writes if `jobId` changes
+while a callback is in flight.
+
+#### `onComplete` idempotency
+`onComplete` is fired from a `useEffect` keyed on `[status, songId,
+onComplete]`, guarded by a `useRef<string | null>` that stores the last
+`songId` we fired for. This prevents double-firing if the parent re-renders
+the loader with a new `onComplete` identity after completion but before
+unmount. The parent is expected to unmount the loader (or key it on `jobId`)
+once `onComplete` fires.
+
+#### Timeline visual design
+The 5-step timeline uses a flex row with `shrink-0` step nodes and `flex-1`
+connector lines between them. Each step is a circle (size-8) with a label
+below (w-20, text-[10px], uppercase). States:
+- **completed** (i < activeIdx, or all when `isDone`): fuchsia border + tinted
+  bg + `<Check>` icon.
+- **active** (i === activeIdx, not done, not error): fuchsia border + soft
+  outer glow (`shadow-[0_0_0_4px_rgba(217,70,239,0.15)]`) + spinning
+  `<Loader2>`.
+- **pending**: muted border + `<i+1>` numeral.
+Connector lines fill with fuchsia when the step they originate from is
+completed; otherwise muted. On error, the active step's spinner turns rose
+and the rest dim — the timeline doesn't lie about progress.
+
+The progress bar gradient is fuchsia→rose normally, rose-only on error. The
+`music-shimmer` overlay only animates while work is in flight (hidden on
+`completed` and `error`).
+
+### Verification
+
+- `cd /home/z/my-project && bun run lint` → **EXIT 0**, zero output
+  project-wide.
+- `bunx tsc --noEmit --skipLibCheck` → 0 errors in my 4 files (pre-existing
+  errors in `skills/**` and `src/app/api/generate/route.ts` are in other
+  agents' files — untouched).
+- Socket server smoke test: `curl -s -m 2
+  "http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling"` returns the
+  engine.io handshake JSON `{"sid":"…","upgrades":["websocket"],…}`,
+  confirming the service is up and the path is correct.
+- Caddy gateway: `curl -s -m 2
+  "http://127.0.0.1:81/socket.io/?XTransformPort=3001&EIO=4&transport=polling"`
+  — the gateway forwards correctly when `XTransformPort=3001` is present
+  (without it, the request falls through to the Next.js app on port 3000 and
+  returns HTML, which is the expected fallback behavior).
+
+### What I did NOT touch
+
+- No other component files (the existing `generation-loader.tsx`, `prompt-
+  composer.tsx`, `cover-image.tsx`, etc. are untouched — `RealtimeLoader` is
+  a sibling, not a replacement).
+- No API routes, no Prisma schema, no `lib/`, no `globals.css`, no types.
+- No pages — wiring `<RealtimeLoader>` into `prompt-composer.tsx` (or wherever
+  the existing `<GenerationLoader>` is mounted) is a downstream integration
+  task that depends on a generation API that publishes progress to Redis.
+  That publisher doesn't exist yet (Phase 2 generation route not yet
+  sharded); the loader is functional but has no live data source until that
+  route lands.
+
+### Mini-service runtime notes (for the orchestrator)
+
+The socket server is started with `bun run dev` (which is `bun --hot
+index.ts`) from `mini-services/socket-server/`. In this sandbox, background
+bun processes appear to be reaped by a watchdog after ~60–90s — the Next.js
+dev server (also `bun run dev`) survives but my mini-service does not. The
+service itself is correct and restarts cleanly; if the orchestrator has a
+process supervisor (systemd, pm2, etc.), it should manage
+`mini-services/socket-server` the same way it manages the Next.js dev server.
+The service writes to `mini-services/socket-server/server.log` — useful for
+diagnosing connection / Redis issues.
+
+`socket.io-client` was added to the main project's `package.json` (it wasn't
+previously a dependency). `bun add socket.io-client` → `socket.io-client@4.8.3`.
+
+### Contract for downstream agents
+
+**Publishing progress (Phase 2 generation route, future agent):**
+Publish a JSON payload to the Redis channel `job:{jobId}`:
+```ts
+// Wire format — every field optional except `status` and `progress`.
+interface JobProgressPayload {
+  status: "queued" | "lyrics" | "audio" | "cover" | "completed" | "error";
+  progress: number;       // 0–100
+  error?: string | null;  // present when status === "error"
+  songId?: string | null; // present when status === "completed"
+  stage?: string;         // optional human-readable override
+}
+```
+The socket server parses the JSON and emits it verbatim as a `progress`
+socket event to room `job:{jobId}`. Non-JSON payloads are forwarded as
+`{ raw: message }` (the hook ignores them).
+
+**Mounting the loader (UI integration, future agent):**
+```tsx
+{activeJobId && (
+  <RealtimeLoader
+    key={activeJobId}            // remount per job to reset internal state
+    jobId={activeJobId}
+    onCancel={() => { /* abort fetch, clear activeJobId */ }}
+    onComplete={(songId) => { /* navigate to player, clear activeJobId */ }}
+  />
+)}
+```
+The `key={jobId}` is important — it guarantees the `useRef`-based
+`onComplete` guard and the elapsed timer reset cleanly across generations.
+

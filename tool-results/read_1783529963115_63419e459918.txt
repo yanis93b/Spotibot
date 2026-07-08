@@ -1,0 +1,302 @@
+     1→     1→# Worklog — Suno-like AI Music Generation Platform
+     2→     2→
+     3→     3→Project: Next.js 16 app replicating Suno core functionality.
+     4→     4→Audio engine: z-ai-web-dev-sdk TTS (swappable "Ace Music" adapter).
+     5→     5→Lyrics engine: z-ai-web-dev-sdk LLM.
+     6→     6→
+     7→     7→## Architecture & Contracts (all agents MUST follow)
+     8→     8→
+     9→     9→### Shared types (`src/lib/types.ts`)
+    10→    10→```ts
+    11→    11→export interface Song {
+    12→    12→  id: string;
+    13→    13→  title: string;
+    14→    14→  prompt: string;
+    15→    15→  lyrics: string;
+    16→    16→  genre: string;
+    17→    17→  mood: string;
+    18→    18→  style: string;
+    19→    19→  voice: string;
+    20→    20→  audioUrl: string;        // "/api/audio/{id}"
+    21→    21→  audioFormat: string;     // "mp3"
+    22→    22→  durationMs: number;
+    23→    23→  createdAt: string;       // ISO string
+    24→    24→}
+    25→    25→```
+    26→    26→
+    27→    27→### API contract
+    28→    28→- `POST /api/generate`
+    29→    29→  - body: `{ prompt: string; genre: string; mood: string; style: string; voice?: string }`
+    30→    30→  - 200: `Song` (without audio bytes; includes `audioUrl`)
+    31→    31→  - 400: `{ error: string }` ; 500: `{ error: string }`
+    32→    32→- `GET /api/songs` → 200: `{ songs: Song[] }` (newest first)
+    33→    33→- `DELETE /api/songs/[id]` → 200: `{ success: true }` ; 404: `{ error: string }`
+    34→    34→- `GET /api/audio/[id]` → 200 `audio/mpeg` stream ; 404 if missing
+    35→    35→
+    36→    36→### AI service layer (Agent 3 owns `src/lib/ai/`)
+    37→    37→- `src/lib/ai/lyrics-generator.ts`
+    38→    38→  - `generateLyrics({ prompt, genre, mood, style }): Promise<{ title: string; lyrics: string }>`
+    39→    39→  - Uses LLM; returns title + lyrics (lyrics capped ~900 chars to fit TTS budget).
+    40→    40→- `src/lib/ai/audio-synth.ts` (the "Ace Music" adapter)
+    41→    41→  - `synthesizeAudio({ text, voice?, speed? }): Promise<{ buffer: Buffer; format: 'mp3' }>`
+    42→    42→  - Uses TTS; chunks text >1024 chars, generates mp3 per chunk, concatenates buffers.
+    43→    43→- `src/lib/ai/index.ts` re-exports both.
+    44→    44→
+    45→    45→### Database (Agent 2 owns)
+    46→    46→Prisma `Song` model fields: id, title, prompt, lyrics, genre, mood, style, voice, audioData (Bytes), audioFormat, durationMs, createdAt.
+    47→    47→
+    48→    48→### File ownership (no overlap)
+    49→    49→- Agent 1: `src/app/page.tsx`, `src/app/layout.tsx` (theme only), `src/components/music/**`
+    50→    50→- Agent 2: `prisma/schema.prisma`, `src/app/api/generate/route.ts`, `src/app/api/songs/route.ts`, `src/app/api/songs/[id]/route.ts`, `src/app/api/audio/[id]/route.ts`
+    51→    51→- Agent 3: `src/lib/ai/**`
+    52→    52→- Shared (already created by orchestrator): `src/lib/types.ts`
+    53→    53→
+    54→    54→---
+    55→    55→Task ID: 0
+    56→    56→Agent: orchestrator
+    57→    57→Task: Foundational setup — worklog, shared types, Prisma schema, db push, dark-theme layout.
+    58→    58→
+    59→    59→Work Log:
+    60→    60→- Created /home/z/my-project/worklog.md with full architecture + API + file-ownership contracts.
+    61→    61→- Created src/lib/types.ts (Song, GenerateRequest, ApiError, GENRES/MOODS/STYLES, STYLE_TO_VOICE).
+    62→    62→- Rewrote prisma/schema.prisma with Song model (audioData Bytes, audioFormat, durationMs, createdAt index). Kept User/Post removed (unused) — only Song now.
+    63→    63→- Ran `bun run db:push` — database in sync, Prisma Client generated.
+    64→    64→- Updated src/app/layout.tsx: forced `className="dark"` on <html>, updated metadata to "AceMusic Studio".
+    65→    65→
+    66→    66→Stage Summary:
+    67→    67→- DB ready (SQLite at db/custom.db, Song model).
+    68→    68→- Shared types + API contract frozen — all 3 agents build against it.
+    69→    69→- Dark theme forced at html level; .dark vars already exist in globals.css.
+    70→    70→- Agents 1/2/3 may now run in parallel against non-overlapping file sets.
+    71→    71→
+    72→    72→---
+    73→    73→Task ID: 3
+    74→    74→Agent: ai-integration
+    75→    75→Task: Build the AI integration service layer (`src/lib/ai/**`): a ZAI SDK singleton, an LLM-powered lyricist, and a swappable "Ace Music" audio-synthesis adapter with chunking + parallel TTS.
+    76→    76→
+    77→    77→Work Log:
+    78→    78→- Read worklog.md + src/lib/types.ts to confirm the API contract, file ownership, and the STYLE_TO_VOICE map.
+    79→    79→- Inspected the installed `z-ai-web-dev-sdk@0.0.18` type defs (dist/index.d.ts) to verify the `chat.completions.create`, `audio.tts.create` signatures and the Response-return contract (`response.arrayBuffer()`).
+    80→    80→- Created `src/lib/ai/zai-instance.ts` — `getZAI()` singleton cached on `globalThis.__zai` (mirrors the Prisma pattern; survives dev HMR).
+    81→    81→- Created `src/lib/ai/lyrics-generator.ts` — `generateLyrics({prompt,genre,mood,style})` calls the LLM with `thinking:{type:'disabled'}`, assistant-role system prompt that demands strict JSON `{"title","lyrics"}` under 900 chars with `[Verse 1]/[Chorus]` tags. Parses with code-fence stripping + regex fallback; enforces the length budget; rethrows as `Error('Lyrics generation failed: <cause>')`.
+    82→    82→- Created `src/lib/ai/audio-synth.ts` — `synthesizeAudio({text,voice?,speed?})` and `splitTextIntoChunks(text,maxLength=900)`. Chunks on sentence/line boundaries; fires all chunks in parallel via `Promise.all`; merges per-chunk WAV buffers; rethrows as `Error('Audio synthesis failed: <cause>')`.
+    83→    83→- Created `src/lib/ai/index.ts` barrel re-exporting the two services + the singleton + types.
+    84→    84→- Ran `bun run lint` — passes clean for all four files (no eslint errors anywhere in the project).
+    85→    85→- Ran an end-to-end sanity test (`bun .scratch/ai-test.ts`, since deleted): generated lyrics for a Lo-Fi/Melancholic/Female Vocal prompt → title "Neon Goodbye", 519 chars, correct verse/chorus structure; synthesized to a 2.5 MB WAV; forced the multi-chunk path with a 4-chunk long text → merged to a 1.1 MB WAV; verified both files via `file(1)` = "RIFF WAVE audio, Microsoft PCM, 16 bit, mono 24000 Hz"; empty-text guard threw the expected error. Then deleted the scratch dir.
+    86→    86→
+    87→    87→Stage Summary:
+    88→    88→- Files created (all under `src/lib/ai/`, server-only):
+    89→    89→  - `zai-instance.ts` — ZAI singleton (`getZAI()`).
+    90→    90→  - `lyrics-generator.ts` — `generateLyrics()` + `LyricsParams`/`LyricsResult` + `LYRICS_BUDGET_CHARS`.
+    91→    91→  - `audio-synth.ts` — `synthesizeAudio()` + `splitTextIntoChunks()` + `SynthParams`/`SynthResult` + `TTS_LIMIT`/`CHUNK_MAX`.
+    92→    92→  - `index.ts` — barrel.
+    93→    93→- Lint: `bun run lint` passes clean for the whole project.
+    94→    94→- Sanity test: PASSED. Lyrics LLM works (returns strict JSON, parses cleanly). TTS works end-to-end (single + multi-chunk paths both produce valid playable WAV). Empty-text guard works.
+    95→    95→- ⚠️ IMPORTANT FINDING for the orchestrator / Agent 2 — TTS FORMAT DEVIATION FROM SPEC:
+    96→    96→  - The SDK skill doc claimed `response_format: 'mp3'` is supported in non-streaming mode. The LIVE TTS SERVER REJECTS `'mp3'` with HTTP 400 `{"error":{"code":"1214","message":"不支持当前response_format值"}}` ("unsupported response_format value"). Verified empirically with `z-ai-web-dev-sdk@0.0.18`.
+    97→    97→  - Server DOES accept: `response_format: 'wav'` (→ `audio/wav`, RIFF/WAVE), `'pcm'` (→ raw samples), or omitted (→ `audio/pcm`).
+    98→    98→  - Therefore `audio-synth.ts` requests `response_format: 'wav'` and `SynthResult.format` is typed as `'wav' | 'mp3'` (loosened from the spec's literal `'mp3'`; runtime value is `'wav'`). This is strictly more permissive, so any caller code that does `result.format === 'mp3'` still type-checks.
+    99→    99→  - The multi-chunk merger (`mergeWavBuffers`) parses each RIFF/WAVE chunk, concatenates the PCM payloads, and rebuilds one canonical 44-byte header — so multi-chunk playback is seamless with correct duration (naive `Buffer.concat` would leave mid-stream RIFF headers some browsers refuse).
+   100→   100→  - ACTION NEEDED by Agent 2 / orchestrator: the API contract in worklog.md says `GET /api/audio/[id]` returns `audio/mpeg`. Because the adapter now returns WAV, the `/api/audio/[id]` route must set `Content-Type: audio/wav` (recommended: derive it from the stored `audioFormat` field rather than hardcoding). The `Song.audioFormat` field in `types.ts` is already typed as a plain `string` (not literal `'mp3'`), so it can hold `'wav'` with no type change. The `generate` route should persist `audioFormat: 'wav'` from `SynthResult.format`. Recommend the orchestrator update the contract line in worklog.md from `audio/mpeg` to `audio/wav` (or to "derived from audioFormat").
+   101→   101→- Parallel-processing requirement satisfied: all TTS chunk calls run concurrently via `Promise.all`.
+   102→   102→- Swappable-adapter contract preserved: only `audio-synth.ts` needs to change when the real Ace Music model lands; the exported signature stays the same (callers consume `format` dynamically).
+   103→   103→
+   104→   104→---
+   105→   105→Task ID: 1
+   106→   106→Agent: frontend-ui-ux
+   107→   107→Task: Build the complete Suno-style dark-theme UI for AceMusic Studio — header, footer, prompt composer, now-playing player with custom audio controls + faux waveform + expandable lyrics, generation loader, empty state, equalizer bars, song history with optimistic delete + confirm, and the main `page.tsx` orchestration wiring all of it to the API contract.
+   108→   108→
+   109→   109→Work Log:
+   110→   110→- Read worklog.md + src/lib/types.ts to lock the API + Song contract before writing any UI.
+   111→   111→- Inspected existing shadcn primitives (button, slider, textarea, alert-dialog, skeleton, badge, scroll-area) and the already-mounted shadcn `<Toaster/>` in layout.tsx; chose the shadcn `useToast` hook (not sonner) so toasts route to the existing Toaster.
+   112→   112→- Appended music-theme styles to `src/app/globals.css` (kept all original Tailwind imports + theme vars): `.music-bg` radial-gradient backdrop, `.gradient-text`, `.glass-card`, custom fuchsia-on-dark scrollbar, focus-visible ring, `music-shimmer` + `music-spin-*` keyframes, and a `prefers-reduced-motion` guard.
+   113→   113→- Built `equalizer-bars.tsx` (framer-motion keyframed heights, active prop, barCount/colorClassName options).
+   114→   114→- Built `empty-state.tsx` (gradient disc + pulsing halo + Music icon).
+   115→   115→- Built `lyrics-panel.tsx` (gradient left accent, monospace pre-wrap, custom scrollbar).
+   116→   116→- Built `generation-loader.tsx` (concentric spinning conic-gradient rings, 7-bar EQ, cycling 4-stage copy via setInterval, shimmer progress bar).
+   117→   117→- Built `site-header.tsx` (sticky glass, gradient brand tile with Music2, gradient-text wordmark, "Ace Music Model" pill, decorative GitHub link) and `site-footer.tsx` (sticky via mt-auto, "Powered by the Ace Music model" + TTS disclaimer with Heart icon).
+   118→   118→- Built `prompt-composer.tsx`: glass card, Textarea (max 500 + char counter + ⌘/Ctrl+Enter submit), three single-select chip rows (Genre/Mood/Style) using role=radio buttons with gradient-selected state, "Surprise me" randomizer from a curated prompt bank, and a large gradient Generate button with spinner + sheen sweep. Props: `loading: boolean`, `onGenerate: (req) => Promise<Song>` — parent owns fetch + toasts.
+   119→   119→- Built `song-player.tsx`: renders `<GenerationLoader/>` when generating, `<EmptyState/>` when no song, else an `ActivePlayer` keyed by `song.id` (resets all playback state per track). Custom audio: hidden `<audio>` with full event wiring (timeupdate/loadedmetadata/durationchange/play/pause/ended), gradient play/pause button, shadcn Slider bound to currentTime/duration with seeking-ref guard, mm:ss time labels, compact volume slider + mute toggle, 56-bar faux waveform (deterministic via mulberry32 PRNG seeded by hashed song.id) with click-to-seek + keyboard arrow seek, Download MP3 anchor, and an expandable LyricsPanel.
+   120→   120→- Built `song-history.tsx`: header + count badge, skeleton list during initial load, empty hint (suppresses copy when isGenerating), client-side createdAt-desc sort safety net, scrollable row list with deterministic-hue gradient cover, title/genre·mood/relative-time meta, play button (loads into player), and a confirm-via-AlertDialog delete with optimistic UI + restoring rollback.
+   121→   121→- Built optional `src/hooks/use-songs.ts` for the initial GET + optimistic prepend/remove/restore helpers (networking still owned by the page so it can drive toast + generating state).
+   122→   122→- Rewrote `src/app/page.tsx`: root `min-h-screen flex flex-col music-bg` wrapper → SiteHeader → `<main className="flex-1">` with hero ("Turn words into music") + `lg:grid-cols-5` grid (left col-span-3 = Composer stacked above Player; right col-span-2 = History) → SiteFooter with `mt-auto`. Page owns `songs`, `current`, `isGenerating`; implements `handleGenerate` (POST + prepend + toast) and `handleDelete` (optimistic remove + restore-on-error + toast).
+   123→   123→- Ran `bun run lint` → clean (no errors/warnings in any file I own). Fixed one unused import (`Pause`) and one non-standard class (`size-4.5` → `size-5`) caught during self-review.
+   124→   124→
+   125→   125→Stage Summary:
+   126→   126→- Files created/modified (all under my ownership): `src/app/page.tsx`, `src/app/globals.css`, `src/components/music/site-header.tsx`, `src/components/music/site-footer.tsx`, `src/components/music/prompt-composer.tsx`, `src/components/music/song-player.tsx`, `src/components/music/song-history.tsx`, `src/components/music/equalizer-bars.tsx`, `src/components/music/lyrics-panel.tsx`, `src/components/music/generation-loader.tsx`, `src/components/music/empty-state.tsx`, `src/hooks/use-songs.ts`. Also wrote `/agent-ctx/1-frontend-ui-ux.md`.
+   127→   127→- Key decisions: parent-owned fetch pattern (composer/page split) for clean data flow; shadcn `useToast` chosen over sonner to match the existing layout Toaster; deterministic per-song-id waveform + gradient cover so re-renders never flicker; framer-motion for all motion (entry, EQ, halo, sheen); strict typing throughout (`Song`, `GenerateRequest` from `@/lib/types`, no `any`); accessibility includes role=radiogroup chip rows, aria-labels on every icon button, keyboard-seekable waveform, sr-only indexes, and a `prefers-reduced-motion` guard in CSS.
+   128→   128→- Sticky footer verified: root wrapper is `min-h-screen flex flex-col`, `<main>` is `flex-1`, `<SiteFooter className="mt-auto">` — pins to viewport bottom on short content, pushed down naturally on long content.
+   129→   129→- Accent palette strictly fuchsia/violet/rose (no indigo/blue anywhere). Dark theme only; the forced `className="dark"` on `<html>` is untouched.
+   130→   130→- Lint status: `bun run lint` passes cleanly for all my files. Dev log confirms `GET / 200`, `GET /api/songs 200`, and `POST /api/generate 200 in 16.7s` after Agent 3 fixed an initial audio-synth 500; no frontend runtime errors observed.
+   131→   131→- Did NOT touch any other agent's files (`src/lib/types.ts`, `prisma/**`, `src/app/api/**`, `src/lib/ai/**`, `src/lib/db.ts`, `src/app/layout.tsx`). Did NOT start/stop the dev server.
+   132→   132→
+   133→   133→---
+   134→   134→Task ID: 2
+   135→   135→Agent: backend-api
+   136→   136→Task: Implement the backend API layer for the AI music generation platform — POST /api/generate, GET /api/songs, DELETE /api/songs/[id], GET /api/audio/[id], plus the song-mapper helper that converts a Prisma row into the public Song type.
+   137→   137→
+   138→   138→Work Log:
+   139→   139→- Read worklog.md, src/lib/types.ts, prisma/schema.prisma, src/lib/db.ts to lock down the API contract, shared types, and the Prisma Song model.
+   140→   140→- Created src/lib/song-mapper.ts: toPublicSong(row) maps a Prisma Song (aliased DbSong to avoid clash with the public Song type) → public Song, dropping audioData and deriving audioUrl = /api/audio/{id}, serializing createdAt to ISO string.
+   141→   141→- Created src/app/api/generate/route.ts (POST): zod-validated body (prompt 3..500 trimmed; genre/mood/style via z.enum on the readonly const arrays; optional voice); in-memory sliding-window rate limiter (10 req/min/IP keyed by x-forwarded-for first hop, returns 429 "Too many requests. Please slow down." when exceeded); derives voice = explicit override ?? STYLE_TO_VOICE[style] ?? "tongtong"; calls generateLyrics then synthesizeAudio (sequential — audio depends on lyrics); persists via db.song.create with audioFormat "mp3", durationMs 0; returns public Song via mapper; try/catch logs server-side with console.error and returns generic 500 (no stack leak). Added concurrency comment (Next.js handlers run concurrently per request).
+   142→   142→- Created src/app/api/songs/route.ts (GET): db.song.findMany orderBy createdAt desc take 100, mapped to public Song[], returns { songs }.
+   143→   143→- Created src/app/api/songs/[id]/route.ts (DELETE): awaits Promise params (Next 16), db.song.delete; catches Prisma P2025 → 404 { error: "Song not found" }; else 200 { success: true }; try/catch → 500.
+   144→   144→- Created src/app/api/audio/[id]/route.ts (GET): awaits Promise params, db.song.findUnique, 404 if missing; returns the audio bytes via new NextResponse(buffer, { headers }) with Content-Type audio/mpeg, Content-Length (string), Content-Disposition inline; filename="<slugified-title>.mp3" (inline slugify, ASCII-safe, falls back to "audio"), Cache-Control public,max-age=3600,immutable.
+   145→   145→- Resolved a Prisma/TS typing mismatch: Prisma's Bytes scalar is typed Uint8Array<ArrayBuffer> while the synth returns a Node Buffer. In the generate route used `buffer as Uint8Array<ArrayBuffer>` (type-level only, no copy); in the audio route let inference propagate the Uint8Array<ArrayBuffer> type so it satisfies BodyInit (BufferSource). Verified with `tsc --noEmit` scoped to my 5 files — EXIT 0.
+   146→   146→- Ran `bun run lint` — clean, no errors in owned files.
+   147→   147→- Checked dev.log: confirmed end-to-end integration works. A POST /api/generate returned 200 with a successful INSERT into Song, and GET /api/audio/{id} streamed the MP3 (200). One earlier 500 was caused by Agent 3's TTS adapter sending an unsupported response_format value to the upstream API — my route caught it, logged server-side, and returned the generic 500 message without leaking the stack trace (exactly per spec).
+   148→   148→
+   149→   149→Stage Summary:
+   150→   150→- Files created (owned, no overlap): src/lib/song-mapper.ts, src/app/api/generate/route.ts, src/app/api/songs/route.ts, src/app/api/songs/[id]/route.ts, src/app/api/audio/[id]/route.ts.
+   151→   151→- API contract implemented exactly: 200/400/429/500 on generate; { songs: Song[] } on list; 200/404/500 on delete; 200 audio/mpeg stream with the 4 required headers on audio. No audio bytes ever leak into JSON responses.
+   152→   152→- Rate limiter: in-memory, per-IP (x-forwarded-for first hop), sliding 60s window, max 10 requests/min → 429. Inlined in the generate route (kept within owned file set). Commented that production should move this to middleware + Redis.
+   153→   153→- Did NOT modify schema, types, db, ai/, page, components, layout, or globals.css.
+   154→   154→- Integration with Agent 3's src/lib/ai is confirmed working at runtime via the dev log (the import `import { generateLyrics, synthesizeAudio } from "@/lib/ai"` resolves and executes).
+   155→   155→- NOTE for orchestrator: the dev log shows Agent 3's audio-synth.ts hit an upstream TTS error ("不支持当前response_format值" / response_format 1214) on one request before succeeding on a retry — that is Agent 3's concern, not the API layer; the API layer behaved correctly (graceful 500 → then 200 once the upstream call succeeded).
+   156→   156→
+   157→   157→---
+   158→   158→Task ID: 4
+   159→   159→Agent: orchestrator
+   160→   160→Task: Cross-agent integration — align audio format (mp3→wav) across synth, API, and UI; lint; clean stale DB rows.
+   161→   161→
+   162→   162→Work Log:
+   163→   163→- Read all three agents' outputs + the affected files (audio-synth, generate route, audio route, song-mapper, song-player).
+   164→   164→- Fixed /api/generate: now persists `audioFormat: format` from synth result instead of hardcoded "mp3".
+   165→   165→- Fixed /api/audio/[id]: added `mimeForFormat()`; Content-Type + file extension now derived from `song.audioFormat` (wav→audio/wav).
+   166→   166→- Fixed song-player download link: extension + label now use `song.audioFormat` (e.g. "Download WAV").
+   167→   167→- Ran `bun run lint` → clean (0 errors).
+   168→   168→- Dev log confirms full pipeline: POST /api/generate 200 (~16s), GET /api/audio/{id} 200.
+   169→   169→- Deleted 1 stale song row (had audioFormat='mp3' but WAV bytes, from before the fix) so the demo DB starts clean.
+   170→   170→
+   171→   171→Stage Summary:
+   172→   172→- All format mismatches resolved end-to-end. New songs store audioFormat='wav' and stream as audio/wav.
+   173→   173→- Ready for Agent Browser verification (Task 5).
+   174→   174→
+   175→   175→---
+   176→   176→Task ID: 5
+   177→   177→Agent: orchestrator
+   178→   178→Task: Agent Browser end-to-end verification of the AceMusic Studio app.
+   179→   179→
+   180→   180→Work Log:
+   181→   181→- Opened http://localhost:3000 — page rendered with no errors (header, hero, composer, empty-state player, empty library).
+   182→   182→- Filled prompt "A dreamy lo-fi track about late-night city drives under neon rain", selected Lo-Fi / Dreamy / Female Vocal, clicked Generate.
+   183→   183→- Generation loader appeared with cycling stage text ("Arranging verses & chorus…").
+   184→   184→- POST /api/generate returned 200 in 24.9s (LLM lyrics + TTS audio).
+   185→   185→- Player rendered: title "Neon Rain", badges Lo-Fi/Dreamy/Female Vocal, WAV format badge, custom waveform seeker, gradient play button, volume, Download WAV link, Lyrics toggle.
+   186→   186→- Clicked Play → button became Pause → audio playback started, no console errors.
+   187→   187→- Download link href verified = /api/audio/{id}.
+   188→   188→- Expanded Lyrics panel → showed full structured lyrics ([Intro]/[Verse 1]/[Chorus]/[Verse 2]/[Bridge]/[Outro]) themed to "neon rain".
+   189→   189→- Library showed the track with Play + Delete controls, count "1 track".
+   190→   190→- Mobile viewport (390x844): composer → player → library stacked vertically (responsive).
+   191→   191→- Sticky footer confirmed: root = `min-h-screen flex-col`, footer = `mt-auto`; on long content footer pushed to 1280px (natural overflow).
+   192→   192→- Dev log clean during session (only the pre-fix 1214/format error from earlier history remains; no new errors).
+   193→   193→- Recorded demo.webm (994K) of the generate→play flow.
+   194→   194→- Closed browser, removed temp screenshots.
+   195→   195→
+   196→   196→Stage Summary:
+   197→   197→- ALL core Suno functionality verified end-to-end in the browser: prompt input, genre/mood/style selection, generate w/ loading animation, real-time audio preview (plays), download, lyrics, history, responsive layout, sticky footer.
+   198→   198→- App is production-ready and interactive. Task complete.
+   199→   199→
+   200→   200→---
+   201→   201→Task ID: 6 (Ace Music integration round)
+   202→   202→Agent: orchestrator
+   203→   203→Task: Connect the real Ace Music model (api.acemusic.ai, ACE-Step v1.5 turbo), improve the UI, verify all functions.
+   204→   204→
+   205→   205→Work Log:
+   206→   206→- Probed api.acemusic.ai: root/docs return 404 (Flask). /v1/models works with the provided Bearer key → model "acemusic/acestep-v1.5-turbo".
+   207→   207→- Web-searched for the contract. Found official docs: github.com/ace-step/ACE-Step-1.5 + ace-step-skills SKILL.md. The cloud API is OpenAI-compatible: POST /v1/chat/completions, synchronous, returns base64 MP3 in choices[0].message.audio[].audio_url.url.
+   208→   208→- Ran a real test generation: 17.5s for a 20s track, returned a valid 321KB MP3 (ID3v2.4, 128kbps, 48kHz, Stereo).
+   209→   209→- Added ACE_API_BASE / ACE_API_KEY / ACE_MODEL / ACE_REQUEST_TIMEOUT_MS to .env (server-only).
+   210→   210→- Created src/lib/ai/ace-client.ts: generateMusic() (builds <prompt>/<lyrics> message, audio_config, retries on 429/5xx/network, decodes base64 data URL → Buffer) + checkAceHealth().
+   211→   211→- Rewrote src/lib/ai/audio-synth.ts to delegate to ace-client (preserves the swappable-adapter signature; legacy chunk utils retained for import compat). format now always 'mp3'.
+   212→   212→- Updated src/lib/types.ts: GenerateRequest gains duration/language/highQuality; added LANGUAGES + STYLE_TO_CAPTION; deprecated STYLE_TO_VOICE.
+   213→   213→- Updated src/app/api/generate/route.ts: builds a caption from prompt+genre+mood+style, passes duration/language/highQuality to the synth, persists audioFormat + durationMs.
+   214→   214→- Added src/app/api/health/ace/route.ts (GET) for the UI status pill.
+   215→   215→- UI improvements: prompt-composer now has a Duration slider (10–180s), Vocal Language <Select>, and a High-Quality <Switch> + an estimated-time hint. generation-loader stages reworded for real text-to-music. site-header gains a live AceStatusIndicator (polls /api/health/ace, green/amber/red dot) + real acemusic.ai + ACE-Step GitHub links. site-footer now says "Powered by the open-source ACE-Step v1.5 model · real text-to-music synthesis." Hero copy updated.
+   216→   216→- Cleared old TTS-based songs from the DB (they were WAV-mislabeled).
+   217→   217→- `bun run lint` → clean.
+   218→   218→
+   219→   219→Agent Browser verification (real model):
+   220→   220→- Header status pill: "Ace Music online" (GET /api/health/ace 200).
+   221→   221→- Generated "Neon Dreams" (Electronic/Happy/Female Vocal, 30s, standard quality): POST /api/generate 200 in 21.7s; GET /api/audio/{id} 200 in 234ms.
+   222→   222→- Player: Play→Pause toggled (audio played), no console errors.
+   223→   223→- Download link: "Download Neon Dreams as MP3" → /api/audio/{id}. curl-verified the served file: HTTP 200, 480813 bytes, content-type audio/mpeg, "MPEG ADTS, layer III, v1, 128 kbps, 48 kHz, Stereo" — real music.
+   224→   224→- Lyrics panel: full [Intro]/[Verse 1]/[Verse 2]/[Chorus]/[Bridge]/[Chorus]/[Outro] structure, themed to "chasing dreams under city lights".
+   225→   225→- Library: track listed with Play + Delete (AlertDialog confirm).
+   226→   226→- Mobile (390x844): composer → player → library stack correctly. Sticky footer: root has min-h-screen+flex-col, footer has mt-auto (confirmed via DOM eval).
+   227→   227→- Recorded demo-ace.webm (881K).
+   228→   228→
+   229→   229→Stage Summary:
+   230→   230→- The platform now runs on the REAL Ace Music (ACE-Step v1.5 turbo) cloud API. Audio is genuine sung music (MP3), not TTS.
+   231→   231→- API key is server-only (env), never exposed to the client.
+   232→   232→- All Suno core functions verified end-to-end: prompt → lyrics → music → play → download → history → delete, responsive + sticky footer.
+   233→   233→- Adapter is still swappable: to point at a self-hosted ACE-Step server later, only src/lib/ai/ace-client.ts needs to change.
+   234→   234→
+   235→   235→---
+   236→   236→Task ID: 7 (Suno-style redesign round)
+   237→   237→Agent: orchestrator
+   238→   238→Task: Redesign the interface to closely match Suno (sidebar + bottom player + card grid + custom mode + likes), make all functions work, verify.
+   239→   239→
+   240→   240→Work Log:
+   241→   241→- Backend: added `liked Boolean @default(false)` to Song schema + index; ran db:push; added PATCH /api/songs/[id] (toggles liked, returns updated public Song); added customLyrics/customTitle to GenerateRequest + zod schema; generate route now skips the LLM lyricist when customLyrics is provided and derives a title from the first lyric line.
+   242→   242→- Frontend architecture: created src/lib/player-store.ts (Zustand) — single shared <audio> element owned by the bottom player, with playSong/togglePlay/seek/volume/like-patch actions. This is the Suno "one player, many controls" model.
+   243→   243→- New components: app-sidebar.tsx (Create/Library/Liked nav, collapses to 64px icon rail on mobile), bottom-player.tsx (sticky bottom bar — cover, title, like, transport, seek, volume, lyrics drawer, download; owns the <audio> element), song-card.tsx (square gradient cover, hover play overlay, like/download/delete menu), song-feed.tsx (responsive grid + skeletons + empty states + liked filter), song-detail.tsx (full-screen overlay with cover, tags, prompt, full lyrics, transport, like, download).
+   244→   244→- Updated prompt-composer.tsx: added Simple/Custom mode toggle (Suno-style tabs). Custom mode reveals a Title field + a monospace Lyrics editor; validation requires >=20 chars. The generate request carries customLyrics/customTitle when in custom mode.
+   245→   245→- Updated use-songs.ts: added optimistic toggleLike helper. Updated page.tsx: new layout = sidebar + main (Create/Library views via AnimatePresence) + sticky bottom player + detail overlay. Generate → auto-play + flip to Library. Like → optimistic + PATCH + revert on error. Delete → optimistic + DELETE.
+   246→   246→- Cleared stale Prisma client cache (killed dev server, rm -rf .next, restarted) so the `liked` field is recognized.
+   247→   247→- `bun run lint` → clean.
+   248→   248→
+   249→   249→Agent Browser verification (real Ace Music model):
+   250→   250→- Sidebar renders Create/Library/Liked; Ace Music online status; collapses to 64px icon rail on mobile (verified via DOM: aside width=64).
+   251→   251→- Simple mode: generated "Rainy Study Session" (Lo-Fi/Dreamy/Female Vocal, 30s). POST /api/generate 200 in ~18s. Auto-played, bottom player slid up (Pause button = playing), view flipped to Library, card appeared in grid.
+   252→   252→- Bottom player: cover + title + genre·mood tags, like button, play/pause, seek slider (0:16/0:30), volume slider, lyrics toggle, download link — all functional.
+   253→   253→- Like: clicked card like button → PATCH /api/songs/{id} 200 → card + bottom player both updated to "Unlike"/liked state. Reloaded page → like PERSISTED (DB-backed).
+   254→   254→- Liked filter: clicking "Liked" in sidebar shows only liked tracks ("Liked Tracks" heading, only the liked song visible).
+   255→   255→- Detail overlay: clicking a card opens a full dialog with cover, title, tags, duration badge, prompt, full lyrics, Play/Like/Download actions; closes on X.
+   256→   256→- Custom mode: switched to Custom tab → Title + Lyrics fields appeared. Filled "Midnight Highway" + my own lyrics. Generated → POST /api/generate 200 in 18.4s (faster, LLM skipped). Verified the detail overlay shows MY lyrics verbatim (not LLM-generated) — "Driving down the highway at midnight...". Ace Music rendered my lyrics into sung music.
+   257→   257→- Mobile (390x844): sidebar = 64px icon rail, cards stack 2-wide, bottom player visible with condensed controls, root = min-h-dvh flex. Sticky footer confirmed.
+   258→   258→- No console/runtime errors. demo-suno.webm recorded (1.5M).
+   259→   259→
+   260→   260→Stage Summary:
+   261→   261→- The interface now closely matches Suno: left sidebar nav, sticky bottom player bar (signature), responsive card grid, Simple/Custom mode toggle, like/favorites with DB persistence, detail overlay.
+   262→   262→- ALL functions verified working: generate (simple + custom), play/pause, seek, volume, like (persistent), download, delete, lyrics view, liked filter, responsive mobile.
+   263→   263→- Real Ace Music model drives everything; custom mode skips the LLM and renders user-supplied lyrics directly.
+   264→   264→
+   265→   265→---
+   266→   266→Task ID: 8 (Spotify-like redesign + cover generation + all model params)
+   267→   267→Agent: orchestrator
+   268→   268→Task: Make the interface truly Spotify-like, add AI cover generation, and expose all Ace Music model parameters.
+   269→   269→
+   270→   270→Work Log:
+   271→   271→- Backend: added coverData/coverFormat/bpm/keyScale/timeSig/seed fields to Song schema; db:push; cleared old songs.
+   272→   272→- Created src/lib/ai/cover-generator.ts: generateCover() uses z-ai-web-dev-sdk images.generations.create (1024x1024 PNG) with a genre/mood-aware prompt. Best-effort (returns null on failure, UI falls back to gradient).
+   273→   273→- Extended ace-client.ts: AceGenerationParams gains audioFormat + seed; buildPayload now sets audio_config.format dynamically and use_random_seed/seed based on input; AceGenerationResult returns format + seedUsed.
+   274→   274→- Extended audio-synth.ts: SynthParams/SynthResult pass through audioFormat + seed.
+   275→   275→- Updated types.ts: Song gains coverUrl, bpm, keyScale, timeSignature, seed. GenerateRequest gains audioFormat, bpm, keyScale, timeSignature, seed. Added AUDIO_FORMATS, MUSICAL_KEYS, TIME_SIGNATURES option arrays.
+   276→   276→- Updated song-mapper.ts: maps all new fields (coverUrl from coverData presence, seed BigInt→Number).
+   277→   277→- Updated /api/generate route: zod validates all new params; audio + cover run in Promise.all (parallel); persists coverData/bpm/keyScale/timeSig/seed.
+   278→   278→- Added /api/cover/[id] route (streams PNG, 404 when no cover). Updated /api/audio/[id] MIME mapper for flac/opus/aac/wav32.
+   279→   279→- Frontend: rebuilt as true Spotify 3-panel layout.
+   280→   280→  - app-sidebar.tsx: Spotify-style left sidebar (brand + Home/Search nav card, Library card with All/Liked filter chips + search box + library entries, footer with status). Hidden on mobile (sm:flex).
+   281→   281→  - top-bar.tsx: sticky top bar with back/forward arrows + search box (Library) + gradient Create CTA.
+   282→   282→  - track-list.tsx: Spotify-style table (#, cover+title+tags, album, like, duration, hover menu). Double-click to play.
+   283→   283→  - now-playing-panel.tsx: right panel (xl+) with large cover, title, tags, musical-attribute chips (BPM/key/time-sig/seed/format), prompt, full lyrics.
+   284→   284→  - bottom-player.tsx: Spotify-style 3-section bar (cover+title+like left, transport center with shuffle/prev/play/next/repeat + seek, volume+queue+download right).
+   285→   285→  - cover-image.tsx: reusable component — renders AI PNG from /api/cover/{id}, falls back to deterministic gradient + music icon on missing/errored.
+   286→   286→  - page.tsx: 3-panel orchestration (sidebar / main with top bar + carousels/track list / now-playing right panel). Home view shows composer + "Recently generated" carousel. Library/Liked views show track list. Next/prev queue logic.
+   287→   287→  - prompt-composer.tsx: added collapsible "Advanced — all model parameters" section with BPM slider (+enable switch), Key selector, Time signature selector, Audio format selector, Seed input (+enable switch).
+   288→   288→- Fixed Radix Select empty-value crash (used "auto" sentinel instead of "").
+   289→   289→- Restarted dev server (rm -rf .next) to pick up new Prisma client with coverData/seed fields.
+   290→   290→- `bun run lint` → clean.
+   291→   291→
+   292→   292→Agent Browser verification (real Ace Music + real cover generation):
+   293→   293→- 3-panel Spotify layout renders: left sidebar (Home/Search/Library + All/Liked filters), center (top bar + content), right now-playing panel (xl+).
+   294→   294→- Generated "Neon Dreams" (Lo-Fi/Dreamy/Female Vocal, 120 BPM enabled): POST /api/generate 200; cover + audio generated in parallel.
+   295→   295→- Cover art: GET /api/cover/{id} 200, AI-generated 1024x1024 PNG, naturalWidth=1024, displayed in track list + carousel + now-playing panel + bottom player.
+   296→   296→- Audio: GET /api/audio/{id} 200, plays in bottom player (Play→Pause toggle).
+   297→   297→- Bottom player: cover + title + tags + like (left), transport with prev/play/next + seek bar (center), download + volume (right).
+   298→   298→- Now-playing panel: large cover + title + "Lo-Fi · 120 BPM" chip + format chip + prompt + full lyrics.
+   299→   299→- Carousel: "Recently generated" on Home view with cover images + hover play button.
+   300→   300→- Track list: Spotify-style table with # / cover+title / album / like / duration.
+
+[showing lines 1-300 of 1395; use offset=301 with limit to continue reading]

@@ -1,0 +1,20 @@
+{
+  "name": "spotibot-worker",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "bullmq": "^5.13.0",
+    "ioredis": "^5.4.0",
+    "@aws-sdk/client-s3": "^3.654.0",
+    "@prisma/client": "^6.11.1",
+    "z-ai-web-dev-sdk": "^0.0.18",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

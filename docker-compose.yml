@@ -1,0 +1,209 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — SpotiBot full stack (Phase 4)
+# ─────────────────────────────────────────────────────────────────────────────
+# Brings up the entire SpotiBot backend stack on a single Docker host:
+#
+#   redis         — job queue (BullMQ) + pub/sub for the socket server
+#   postgres      — primary relational store (Prisma migrations target this)
+#   ace-step      — GPU text-to-music FastAPI server (CUDA 12.6 runtime)
+#   worker        — BullMQ consumer that runs the heavy AI generation jobs
+#   socket-server — Socket.io server for real-time playback/queue events
+#
+# Usage:
+#   docker compose up -d redis postgres socket-server
+#   docker compose up ace-step        # GPU box — needs nvidia-container-toolkit
+#   docker compose up worker
+#   docker compose logs -f ace-step
+#
+# The Next.js app itself is NOT in this file — it continues to run via
+# `bun run dev` (or its own container in a separate compose) and connects to
+# these services via the in-cluster service names below.
+#
+# ─── GPU prerequisites ───────────────────────────────────────────────────────
+# The `ace-step` service uses the NVIDIA Container Toolkit. Install it on the
+# host (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
+# and verify with `docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi`.
+# On hosts without a GPU, set `ACE_STEP_REPLICA=0` or comment out the service.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── Redis 7 — queue + pub/sub bus ──────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: spotibot-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - spotibot-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── PostgreSQL 16 — primary DB ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: spotibot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spotibot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spotibot}
+      POSTGRES_DB: ${POSTGRES_DB:-spotibot}
+      # Tune for a small dev box; bump for production.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - spotibot-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spotibot} -d ${POSTGRES_DB:-spotibot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── ACE-Step GPU server (FastAPI on :8000) ─────────────────────────────────
+  # Builds from ./docker/ace-step. Requires NVIDIA Container Toolkit on host.
+  ace-step:
+    build:
+      context: ./docker/ace-step
+      dockerfile: Dockerfile
+      args:
+        ACE_STEP_REPO: ${ACE_STEP_REPO:-https://github.com/ace-step/ACE-Step-1.5.git}
+        ACE_STEP_REF: ${ACE_STEP_REF:-main}
+    container_name: spotibot-ace-step
+    restart: unless-stopped
+    # GPU runtime — required for torch to see CUDA.
+    # On a CPU-only host, replace `deploy.resources.reservations.devices`
+    # with nothing (or comment this block) and accept that inference will be
+    # unusably slow / OOM. See README for fallback instructions.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      ACE_CHECKPOINT_DIR: /models/ace-step
+      ACE_OUTPUT_DIR: /outputs
+      ACE_REPO_DIR: /opt/ACE-Step
+      ACE_DTYPE: ${ACE_DTYPE:-bfloat16}
+      ACE_DEVICE: ${ACE_DEVICE:-cuda}
+      ACE_LOG_LEVEL: ${ACE_LOG_LEVEL:-info}
+      ACE_REQUEST_TIMEOUT: ${ACE_REQUEST_TIMEOUT:-600}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist downloaded checkpoints across container rebuilds.
+      - ace-checkpoints:/models
+      # Generated audio files — the worker reads these to stream back to users.
+      - ace-outputs:/outputs
+    networks:
+      - spotibot-net
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Pipeline load can take 60–120s on first boot.
+      start_period: 300s
+
+  # ── Worker (Bun + BullMQ consumer) ─────────────────────────────────────────
+  # Builds from ./worker. Polls Redis for jobs, calls ace-step's FastAPI, and
+  # persists results to Postgres. Designed to scale horizontally — set
+  # `docker compose up --scale worker=N`.
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: spotibot-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      # BullMQ connection — points at the redis service on the internal network.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # Postgres — same internal-network alias.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-spotibot}:${POSTGRES_PASSWORD:-spotibot}@postgres:5432/${POSTGRES_DB:-spotibot}?schema=public}
+      # ACE-Step FastAPI base URL — internal alias, no port-forwarding needed.
+      ACE_STEP_API_URL: ${ACE_STEP_API_URL:-http://ace-step:8000}
+      ACE_STEP_API_TIMEOUT_MS: ${ACE_STEP_API_TIMEOUT_MS:-600000}
+      # Concurrency for the BullMQ worker (per-container).
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Share the outputs dir so the worker can stream generated audio back to
+      # the Next.js API without round-tripping through ace-step's HTTP layer.
+      - ace-outputs:/outputs:ro
+    networks:
+      - spotibot-net
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      # Don't start the worker until the ACE-Step FastAPI is reachable —
+      # otherwise the first job will 503 and Burnside-retry forever.
+      ace-step:
+        condition: service_healthy
+
+  # ── Socket.io server (Bun) — real-time playback/queue events ───────────────
+  # Builds from ./mini-services/socket-server. Path `/` is mandatory — the
+  # host's Caddy gateway uses it to route `/socket.io/?XTransformPort=3001`.
+  socket-server:
+    build:
+      context: ./mini-services/socket-server
+      dockerfile: Dockerfile
+    container_name: spotibot-socket-server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SOCKET_PORT: ${SOCKET_PORT:-3001}
+      SOCKET_PATH: ${SOCKET_PATH:-/}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Allowed origin for CORS — defaults to the dev port; override in prod.
+      SOCKET_CORS_ORIGIN: ${SOCKET_CORS_ORIGIN:-*}
+    ports:
+      - "3001:3001"
+    networks:
+      - spotibot-net
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  spotibot-net:
+    driver: bridge
+    name: spotibot-net
+
+volumes:
+  redis-data:
+    name: spotibot-redis-data
+  postgres-data:
+    name: spotibot-postgres-data
+  # Model weights + HF cache — large, must persist across image rebuilds.
+  ace-checkpoints:
+    name: spotibot-ace-checkpoints
+  # Generated audio files — shared between ace-step (rw) and worker (ro).
+  ace-outputs:
+    name: spotibot-ace-outputs

@@ -1,0 +1,19 @@
+{
+  "name": "spotibot-discord",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
+    "deploy-commands": "tsx deploy-commands.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "ioredis": "^5.4.0",
+    "bullmq": "^5.13.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

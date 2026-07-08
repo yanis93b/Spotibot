@@ -1,0 +1,1350 @@
+     1→# Prompt GLM 5.2 — Implémentation Spotibot x ACE-Step
+     2→
+     3→## Contexte
+     4→
+     5→Tu es un architecte logiciel senior spécialisé Next.js, IA générative et systèmes distribués. Tu dois implémenter une plateforme hybride musique générative (type Suno) + streaming (type Spotify) en transformant deux codebases existantes.
+     6→
+     7→## Codebases à implémenter
+     8→
+     9→### 1. Spotibot (Next.js 16 / TypeScript / Prisma / Zustand)
+    10→Repo local : `C:\Users\yanis\OneDrive\Bureau\Spotibot`
+    11→
+    12→Stack actuelle :
+    13→- Next.js 16 App Router + TypeScript 5
+    14→- Tailwind CSS 4 + shadcn/ui (New York) + Lucide icons
+    15→- Prisma ORM + SQLite (à migrer PostgreSQL)
+    16→- Zustand (player state) + framer-motion (animations)
+    17→- z-ai-web-dev-sdk (LLM lyricist + image generation)
+    18→- NextAuth.js (email/password + GitHub OAuth)
+    19→- Ace Music cloud API (ACE-Step v1.5 turbo)
+    20→
+    21→Structure clé :
+    22→```
+    23→src/
+    24→├─ app/
+    25→│  ├─ page.tsx                    # Main orchestration (3-panel layout)
+    26→│  ├─ layout.tsx                  # Dark theme root
+    27→│  └─ api/
+    28→│     ├─ generate/                # POST: génération synchrone (à rendre asynchrone)
+    29→│     ├─ songs/                   # CRUD songs
+    30→│     ├─ playlists/               # CRUD playlists
+    31→│     ├─ audio/[id]/              # Stream audio
+    32→│     └─ cover/[id]/              # Stream cover
+    33→├─ components/music/
+    34→│  ├─ app-sidebar.tsx             # Navigation gauche
+    35→│  ├─ bottom-player.tsx           # Player bar sticky
+    36→│  ├─ track-list.tsx              # Tableau Spotify-like
+    37→│  ├─ now-playing-panel.tsx       # Panneau droit
+    38→│  ├─ prompt-composer.tsx         # Formulaire de génération
+    39→│  ├─ generation-loader.tsx       # Timer + cancel (à remplacer par barre progrès temps réel)
+    40→│  └─ ...
+    41→├─ lib/
+    42→│  ├─ ai/
+    43→│  │  ├─ ace-client.ts            # Client ACE-Step API (retry, rate limit, seed, tous params audio)
+    44→│  │  ├─ audio-synth.ts           # Adapter swappable
+    45→│  │  ├─ lyrics-generator.ts      # LLM lyricist avec parsing JSON
+    46→│  │  └─ cover-generator.ts       # Cover art best-effort
+    47→│  ├─ player-store.ts             # Zustand audio state
+    48→│  ├─ types.ts                    # Types partagés + constantes (GENRES, MOODS, STYLES, LANGUAGES...)
+    49→│  └─ db.ts                       # Prisma client singleton
+    50→└─ hooks/
+    51→   ├─ use-songs.ts                # Library state
+    52→   ├─ use-playlists.ts            # Playlist state
+    53→   └─ use-keyboard-shortcuts.ts   # Raccourcis clavier
+    54→```
+    55→
+    56→### 2. ACE-Step (Python / PyTorch / Diffusers)
+    57→Repo : https://github.com/ace-step/ACE-Step
+    58→
+    59→Pipeline clé : `acestep/pipeline_ace_step.py` (70k lignes, classe `ACEStepPipeline`)
+    60→API existante : `infer-api.py` (FastAPI, endpoint POST `/generate` synchrone)
+    61→Schedulers : Euler, Heun, PingPong
+    62→Guidance : CFG, APG, cfg_star
+    63→Features : Text2Music, Audio2Audio, Retake, Repaint, Edit (flow-edit), Extend, LoRA
+    64→
+    65→## Architecture Cible
+    66→
+    67→```
+    68→┌──────────────────────────────────────────────────────────────┐
+    69→│                    VERCEL / NEXT.JS 16                       │
+    70→│  Frontend React 19  ──  API Routes  ──  WebSocket Server     │
+    71→└──────────┬───────────────────────┬───────────────────────────┘
+    72→           │                       │
+    73→     ┌─────▼──────┐         ┌──────▼──────┐
+    74→     │   Redis    │         │  PostgreSQL │
+    75→     │  (Queue)   │         │   (Neon)    │
+    76→     └─────┬──────┘         └─────────────┘
+    77→           │
+    78→     ┌─────▼──────────────────────────────────┐
+    79→     │  Worker Node.js (BullMQ)               │
+    80→     │  → LLM Lyricist → ACE-Step API → S3   │
+    81→     └────────────────────────────────────────┘
+    82→           │
+    83→     ┌─────▼──────────────────────────────────┐
+    84→     │  ACE-Step GPU Server (FastAPI/Docker)  │
+    85→     │  /generate | /remix | /repaint | /edit │
+    86→     │  /extend | /health | /status/{jobId}   │
+    87→     └────────────────────────────────────────┘
+    88→```
+    89→
+    90→## Plan d'Implémentation par Phases
+    91→
+    92→### PHASE 1 : Fondations (Semaine 1-2)
+    93→
+    94→#### Tâche 1.1 : Migrer SQLite → PostgreSQL
+    95→
+    96→Fichier : `prisma/schema.prisma`
+    97→
+    98→Modifier le datasource :
+    99→```prisma
+   100→datasource db {
+   101→  provider = "postgresql"
+   102→  url      = env("DATABASE_URL")
+   103→}
+   104→```
+   105→
+   106→Ajouter au modèle `Song` :
+   107→```prisma
+   108→model Song {
+   109→  // ... champs existants ...
+   110→  status         String   @default("ready")    // "generating" | "ready" | "failed"
+   111→  jobId          String?                        // BullMQ job ID
+   112→  errorMessage   String?                        // si failed
+   113→  playCount      Int      @default(0)
+   114→  audioUrl       String?                        // URL S3/R2 (nullable le temps de gen)
+   115→  coverUrl       String?                        // URL S3/R2
+   116→  audioData      Bytes?                         // @nullable (migration progressive)
+   117→  coverData      Bytes?                         // @nullable
+   118→}
+   119→```
+   120→
+   121→Ajouter le modèle `GenerationJob` :
+   122→```prisma
+   123→model GenerationJob {
+   124→  id        String   @id @default(cuid())
+   125→  jobId     String   @unique
+   126→  status    String   @default("queued") // queued | processing | lyrics | audio | cover | completed | failed
+   127→  progress  Float    @default(0)
+   128→  userId    String
+   129→  prompt    String
+   130→  genre     String
+   131→  mood      String
+   132→  style     String
+   133→  params    String?  // JSON paramètres avancés
+   134→  error     String?
+   135→  createdAt DateTime @default(now())
+   136→  updatedAt DateTime @updatedAt
+   137→  songId    String?
+   138→  
+   139→  @@index([userId, createdAt])
+   140→  @@index([status, createdAt])
+   141→}
+   142→```
+   143→
+   144→Exécuter : `npx prisma db push`
+   145→
+   146→#### Tâche 1.2 : Installer dépendances queue + storage
+   147→
+   148→```bash
+   149→bun add bullmq ioredis @aws-sdk/client-s3 @aws-sdk/s3-request-presigner socket.io socket.io-client
+   150→```
+   151→
+   152→#### Tâche 1.3 : Créer le client BullMQ
+   153→
+   154→Fichier : `src/lib/queue.ts`
+   155→
+   156→```typescript
+   157→import { Queue, Worker, Job } from "bullmq";
+   158→import Redis from "ioredis";
+   159→
+   160→const connection = new Redis(process.env.REDIS_URL || "redis://localhost:6379", {
+   161→  maxRetriesPerRequest: null,
+   162→  enableReadyCheck: false,
+   163→});
+   164→
+   165→export const generateQueue = new Queue("ace:generate", {
+   166→  connection,
+   167→  defaultJobOptions: {
+   168→    attempts: 3,
+   169→    backoff: { type: "exponential", delay: 5000 },
+   170→    timeout: 300_000, // 5 min
+   171→    removeOnComplete: { age: 3600 * 24 },
+   172→    removeOnFail: { age: 3600 * 24 * 7 },
+   173→  },
+   174→});
+   175→
+   176→export const remixQueue = new Queue("ace:remix", { connection });
+   177→export const repaintQueue = new Queue("ace:repaint", { connection });
+   178→export const editQueue = new Queue("ace:edit", { connection });
+   179→export const extendQueue = new Queue("ace:extend", { connection });
+   180→```
+   181→
+   182→#### Tâche 1.4 : Réécrire POST /api/generate
+   183→
+   184→Fichier : `src/app/api/generate/route.ts`
+   185→
+   186→Remplacer l'appel synchrone par la création d'un job BullMQ :
+   187→
+   188→```typescript
+   189→import { NextRequest, NextResponse } from "next/server";
+   190→import { z } from "zod";
+   191→import { generateQueue } from "@/lib/queue";
+   192→import { db } from "@/lib/db";
+   193→import { GENRES, MOODS, STYLES, LANGUAGES, AUDIO_FORMATS, MUSICAL_KEYS, TIME_SIGNATURES, STYLE_TO_CAPTION, GenerateRequest } from "@/lib/types";
+   194→import { getCurrentUserId } from "@/lib/session";
+   195→
+   196→const generateSchema = z.object({
+   197→  prompt: z.string().trim().min(3).max(500),
+   198→  genre: z.enum(GENRES),
+   199→  mood: z.enum(MOODS),
+   200→  style: z.enum(STYLES),
+   201→  voice: z.string().trim().optional(),
+   202→  duration: z.number().int().min(10).max(300).optional(),
+   203→  language: z.enum(LANGUAGES.map(l => l.code) as [string, ...string[]]).optional(),
+   204→  highQuality: z.boolean().optional(),
+   205→  customLyrics: z.string().trim().min(20).max(2000).optional(),
+   206→  customTitle: z.string().trim().min(1).max(80).optional(),
+   207→  audioFormat: z.enum(AUDIO_FORMATS.map(f => f.code) as [string, ...string[]]).optional(),
+   208→  bpm: z.number().int().min(30).max(300).optional(),
+   209→  keyScale: z.enum(MUSICAL_KEYS as [string, ...string[]]).optional(),
+   210→  timeSignature: z.enum(TIME_SIGNATURES.map(t => t.code) as [string, ...string[]]).optional(),
+   211→  seed: z.number().int().min(0).max(4294967295).optional(),
+   212→});
+   213→
+   214→export async function POST(req: NextRequest) {
+   215→  const userId = await getCurrentUserId();
+   216→  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   217→
+   218→  let body: unknown;
+   219→  try { body = await req.json(); }
+   220→  catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+   221→
+   222→  const parsed = generateSchema.safeParse(body);
+   223→  if (!parsed.success) {
+   224→    return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
+   225→  }
+   226→
+   227→  try {
+   228→    // Créer le job dans BullMQ
+   229→    const job = await generateQueue.add("generate", {
+   230→      userId,
+   231→      ...parsed.data,
+   232→      caption: buildCaption(parsed.data),
+   233→    });
+   234→
+   235→    // Créer l'enregistrement de suivi en DB
+   236→    await db.generationJob.create({
+   237→      data: {
+   238→        jobId: job.id,
+   239→        status: "queued",
+   240→        userId,
+   241→        prompt: parsed.data.prompt,
+   242→        genre: parsed.data.genre,
+   243→        mood: parsed.data.mood,
+   244→        style: parsed.data.style,
+   245→        params: JSON.stringify(parsed.data),
+   246→      },
+   247→    });
+   248→
+   249→    return NextResponse.json({ jobId: job.id, status: "queued" }, { status: 202 });
+   250→  } catch (err) {
+   251→    console.error("generate: failed to queue job", err);
+   252→    return NextResponse.json({ error: "Failed to queue generation" }, { status: 500 });
+   253→  }
+   254→}
+   255→
+   256→function buildCaption(params: { prompt: string; genre: string; mood: string; style: string }): string {
+   257→  const styleHint = STYLE_TO_CAPTION[params.style] ?? "";
+   258→  return [params.prompt, params.genre, params.mood.toLowerCase(), styleHint].filter(Boolean).join(", ");
+   259→}
+   260→```
+   261→
+   262→#### Tâche 1.5 : Créer endpoint GET /api/jobs/[id]
+   263→
+   264→Fichier : `src/app/api/jobs/[id]/route.ts`
+   265→
+   266→```typescript
+   267→import { NextRequest, NextResponse } from "next/server";
+   268→import { db } from "@/lib/db";
+   269→import { getCurrentUserId } from "@/lib/session";
+   270→
+   271→export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+   272→  const userId = await getCurrentUserId();
+   273→  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   274→
+   275→  const job = await db.generationJob.findUnique({
+   276→    where: { jobId: params.id },
+   277→  });
+   278→
+   279→  if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 });
+   280→  if (job.userId !== userId) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+   281→
+   282→  return NextResponse.json({
+   283→    jobId: job.jobId,
+   284→    status: job.status,
+   285→    progress: job.progress,
+   286→    error: job.error,
+   287→    songId: job.songId,
+   288→  });
+   289→}
+   290→```
+   291→
+   292→#### Tâche 1.6 : Créer le Worker Node.js
+   293→
+   294→Créer dossier `worker/` à la racine.
+   295→
+   296→Fichier : `worker/package.json`
+   297→```json
+   298→{
+   299→  "name": "spotibot-worker",
+   300→  "private": true,
+   301→  "scripts": {
+   302→    "dev": "tsx watch index.ts",
+   303→    "start": "tsx index.ts"
+   304→  },
+   305→  "dependencies": {
+   306→    "bullmq": "^5.0.0",
+   307→    "ioredis": "^5.0.0",
+   308→    "@aws-sdk/client-s3": "^3.0.0",
+   309→    "@prisma/client": "^6.11.1",
+   310→    "zod": "^4.0.0"
+   311→  },
+   312→  "devDependencies": {
+   313→    "tsx": "^4.0.0",
+   314→    "typescript": "^5.0.0"
+   315→  }
+   316→}
+   317→```
+   318→
+   319→Fichier : `worker/index.ts`
+   320→```typescript
+   321→import { Worker } from "bullmq";
+   322→import Redis from "ioredis";
+   323→import { PrismaClient } from "@prisma/client";
+   324→import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+   325→import { generateLyrics } from "./handlers/lyrics";
+   326→import { generateMusic } from "./handlers/ace-step";
+   327→import { generateCover } from "./handlers/cover";
+   328→
+   329→const connection = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+   330→const db = new PrismaClient();
+   331→const s3 = new S3Client({
+   332→  region: process.env.S3_REGION || "auto",
+   333→  endpoint: process.env.S3_ENDPOINT,
+   334→  credentials: {
+   335→    accessKeyId: process.env.S3_ACCESS_KEY!,
+   336→    secretAccessKey: process.env.S3_SECRET_KEY!,
+   337→  },
+   338→});
+   339→
+   340→const BUCKET = process.env.S3_BUCKET || "spotibot";
+   341→
+   342→async function updateProgress(jobId: string, status: string, progress: number, error?: string) {
+   343→  await db.generationJob.update({
+   344→    where: { jobId },
+   345→    data: { status, progress, error, updatedAt: new Date() },
+   346→  });
+   347→  // Publier sur Redis pour le WebSocket
+   348→  await connection.publish(`job:${jobId}`, JSON.stringify({ status, progress, error }));
+   349→}
+   350→
+   351→async function uploadToS3(key: string, buffer: Buffer, contentType: string): Promise<string> {
+   352→  await s3.send(new PutObjectCommand({
+   353→    Bucket: BUCKET,
+   354→    Key: key,
+   355→    Body: buffer,
+   356→    ContentType: contentType,
+   357→  }));
+   358→  return `${process.env.S3_PUBLIC_URL || `https://${BUCKET}.s3.amazonaws.com`}/${key}`;
+   359→}
+   360→
+   361→const worker = new Worker("ace:generate", async (job) => {
+   362→  const { userId, caption, customLyrics, customTitle, prompt, genre, mood, style, duration, language, highQuality, audioFormat, bpm, keyScale, timeSignature, seed } = job.data;
+   363→
+   364→  try {
+   365→    // Étape 1 : Lyrics (15%)
+   366→    await updateProgress(job.id, "lyrics", 0.15);
+   367→    let title: string;
+   368→    let lyrics: string;
+   369→
+   370→    if (customLyrics && customLyrics.trim()) {
+   371→      title = customTitle?.trim() || deriveTitleFromLyrics(customLyrics) || "Untitled";
+   372→      lyrics = customLyrics.trim();
+   373→    } else {
+   374→      const out = await generateLyrics({ prompt, genre, mood, style });
+   375→      title = out.title;
+   376→      lyrics = out.lyrics;
+   377→    }
+   378→
+   379→    // Étape 2 : Audio via ACE-Step (60%)
+   380→    await updateProgress(job.id, "audio", 0.35);
+   381→    const audioResult = await generateMusic({
+   382→      prompt: caption,
+   383→      text: lyrics,
+   384→      duration: duration || 30,
+   385→      language: language || "en",
+   386→      thinking: highQuality || false,
+   387→      audioFormat: audioFormat || "mp3",
+   388→      bpm,
+   389→      keyScale,
+   390→      timeSignature,
+   391→      seed,
+   392→    });
+   393→
+   394→    // Upload audio to S3
+   395→    const audioKey = `audio/${job.id}.${audioResult.format}`;
+   396→    const mimeMap: Record<string, string> = { mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", opus: "audio/opus", aac: "audio/aac", wav32: "audio/wav" };
+   397→    const audioUrl = await uploadToS3(audioKey, audioResult.buffer, mimeMap[audioResult.format] || "audio/mpeg");
+   398→
+   399→    await updateProgress(job.id, "audio", 0.6);
+   400→
+   401→    // Étape 3 : Cover en parallèle (80%)
+   402→    await updateProgress(job.id, "cover", 0.65);
+   403→    const coverResult = await generateCover({ title, genre, mood, prompt });
+   404→
+   405→    let coverUrl: string | null = null;
+   406→    if (coverResult) {
+   407→      const coverKey = `covers/${job.id}.png`;
+   408→      coverUrl = await uploadToS3(coverKey, coverResult.buffer, "image/png");
+   409→    }
+   410→
+   411→    await updateProgress(job.id, "cover", 0.8);
+   412→
+   413→    // Étape 4 : Persist en DB (90%)
+   414→    const song = await db.song.create({
+   415→      data: {
+   416→        title,
+   417→        prompt,
+   418→        lyrics,
+   419→        genre,
+   420→        mood,
+   421→        style,
+   422→        voice: language || "en",
+   423→        audioUrl,
+   424→        audioFormat: audioResult.format,
+   425→        durationMs: Math.round((duration || 30) * 1000),
+   426→        coverUrl,
+   427→        bpm: bpm || null,
+   428→        keyScale: keyScale || null,
+   429→        timeSig: timeSignature || null,
+   430→        seed: audioResult.seedUsed != null ? BigInt(audioResult.seedUsed) : null,
+   431→        ownerId: userId,
+   432→        status: "ready",
+   433→        jobId: job.id,
+   434→      },
+   435→    });
+   436→
+   437→    // Mettre à jour le job avec le songId
+   438→    await db.generationJob.update({
+   439→      where: { jobId: job.id },
+   440→      data: { status: "completed", progress: 1.0, songId: song.id },
+   441→    });
+   442→
+   443→    await connection.publish(`job:${job.id}`, JSON.stringify({
+   444→      status: "completed",
+   445→      progress: 1.0,
+   446→      songId: song.id,
+   447→    }));
+   448→
+   449→    return { songId: song.id, title };
+   450→  } catch (err) {
+   451→    const errorMsg = err instanceof Error ? err.message : String(err);
+   452→    await updateProgress(job.id, "failed", 0, errorMsg);
+   453→    throw err;
+   454→  }
+   455→}, { connection, concurrency: 2, limiter: { max: 1, duration: 30_000 } });
+   456→
+   457→worker.on("completed", (job) => console.log(`Job ${job.id} completed`));
+   458→worker.on("failed", (job, err) => console.error(`Job ${job?.id} failed:`, err.message));
+   459→
+   460→console.log("Worker started, waiting for jobs...");
+   461→
+   462→function deriveTitleFromLyrics(lyrics: string): string {
+   463→  const lines = lyrics.split("\n").map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith("["));
+   464→  return lines[0]?.split(/\s+/).slice(0, 6).join(" ").slice(0, 60) || "";
+   465→}
+   466→```
+   467→
+   468→#### Tâche 1.7 : Handlers du Worker
+   469→
+   470→Fichier : `worker/handlers/lyrics.ts`
+   471→```typescript
+   472→// Copier le contenu de src/lib/ai/lyrics-generator.ts ici (version standalone)
+   473→// Mêmes fonctions : generateLyrics, buildSystemPrompt, buildUserPrompt, etc.
+   474→// MAIS adapter l'import ZAI pour ne pas dépendre du SDK Next.js
+   475→```
+   476→
+   477→Fichier : `worker/handlers/ace-step.ts`
+   478→```typescript
+   479→// Interface vers l'API ACE-Step auto-hébergée
+   480→const ACE_STEP_API = process.env.ACE_STEP_API || "http://localhost:8000";
+   481→
+   482→export interface AceGenerationParams {
+   483→  prompt: string;
+   484→  text: string;
+   485→  duration: number;
+   486→  language: string;
+   487→  thinking: boolean;
+   488→  audioFormat: string;
+   489→  bpm?: number;
+   490→  keyScale?: string;
+   491→  timeSignature?: string;
+   492→  seed?: number;
+   493→}
+   494→
+   495→export interface AceGenerationResult {
+   496→  buffer: Buffer;
+   497→  format: string;
+   498→  seedUsed?: number;
+   499→}
+   500→
+   501→export async function generateMusic(params: AceGenerationParams): Promise<AceGenerationResult> {
+   502→  const payload = {
+   503→    prompt: params.prompt,
+   504→    lyrics: params.text,
+   505→    audio_duration: params.duration,
+   506→    infer_step: params.thinking ? 60 : 27,
+   507→    guidance_scale: 15,
+   508→    scheduler_type: "euler",
+   509→    cfg_type: "apg",
+   510→    omega_scale: 10,
+   511→    actual_seeds: params.seed ? [params.seed] : [Math.floor(Math.random() * 4294967295)],
+   512→    guidance_interval: 0.5,
+   513→    guidance_interval_decay: 0,
+   514→    min_guidance_scale: 3,
+   515→    use_erg_tag: true,
+   516→    use_erg_lyric: true,
+   517→    use_erg_diffusion: true,
+   518→    oss_steps: [],
+   519→    guidance_scale_text: 0,
+   520→    guidance_scale_lyric: 0,
+   521→  };
+   522→
+   523→  const res = await fetch(`${ACE_STEP_API}/generate`, {
+   524→    method: "POST",
+   525→    headers: { "Content-Type": "application/json" },
+   526→    body: JSON.stringify(payload),
+   527→    signal: AbortSignal.timeout(300_000),
+   528→  });
+   529→
+   530→  if (!res.ok) {
+   531→    const err = await res.text();
+   532→    throw new Error(`ACE-Step API error (${res.status}): ${err}`);
+   533→  }
+   534→
+   535→  const result = await res.json();
+   536→  // Télécharger le fichier audio généré
+   537→  const audioRes = await fetch(`${ACE_STEP_API}/outputs/${result.output_path}`);
+   538→  if (!audioRes.ok) throw new Error("Failed to download generated audio");
+   539→
+   540→  const buffer = Buffer.from(await audioRes.arrayBuffer());
+   541→  return { buffer, format: "wav", seedUsed: payload.actual_seeds[0] };
+   542→}
+   543→```
+   544→
+   545→### PHASE 2 : WebSocket & Bot Discord (Semaine 3-4)
+   546→
+   547→#### Tâche 2.1 : Serveur Socket.io
+   548→
+   549→Fichier : `mini-services/socket-server/index.ts`
+   550→```typescript
+   551→import { createServer } from "http";
+   552→import { Server } from "socket.io";
+   553→import Redis from "ioredis";
+   554→
+   555→const httpServer = createServer();
+   556→const io = new Server(httpServer, {
+   557→  cors: { origin: process.env.CORS_ORIGIN || "http://localhost:3000" },
+   558→});
+   559→
+   560→const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+   561→
+   562→io.on("connection", (socket) => {
+   563→  const jobId = socket.handshake.query.jobId as string;
+   564→  if (jobId) {
+   565→    socket.join(`job:${jobId}`);
+   566→    // S'abonner aux updates Redis
+   567→    const subscriber = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+   568→    subscriber.subscribe(`job:${jobId}`);
+   569→    subscriber.on("message", (channel, message) => {
+   570→      io.to(`job:${jobId}`).emit("progress", JSON.parse(message));
+   571→    });
+   572→    socket.on("disconnect", () => subscriber.quit());
+   573→  }
+   574→});
+   575→
+   576→const PORT = parseInt(process.env.SOCKET_PORT || "3001");
+   577→httpServer.listen(PORT, () => console.log(`Socket.io server on port ${PORT}`));
+   578→```
+   579→
+   580→#### Tâche 2.2 : Hook WebSocket client
+   581→
+   582→Fichier : `src/hooks/use-job-socket.ts`
+   583→```typescript
+   584→"use client";
+   585→
+   586→import { useEffect, useState } from "react";
+   587→import { io, Socket } from "socket.io-client";
+   588→
+   589→interface JobProgress {
+   590→  status: string;
+   591→  progress: number;
+   592→  error?: string;
+   593→  songId?: string;
+   594→}
+   595→
+   596→export function useJobSocket(jobId: string | null) {
+   597→  const [progress, setProgress] = useState<JobProgress>({ status: "idle", progress: 0 });
+   598→
+   599→  useEffect(() => {
+   600→    if (!jobId) return;
+   601→    const socket: Socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001", {
+   602→      query: { jobId },
+   603→    });
+   604→    socket.on("progress", (data: JobProgress) => setProgress(data));
+   605→    return () => { socket.disconnect(); };
+   606→  }, [jobId]);
+   607→
+   608→  return progress;
+   609→}
+   610→```
+   611→
+   612→#### Tâche 2.3 : GenerationLoader temps réel
+   613→
+   614→Fichier : `src/components/music/generation-loader.tsx`
+   615→```typescript
+   616→"use client";
+   617→
+   618→import { motion } from "framer-motion";
+   619→import { Clock, Loader2, CheckCircle, XCircle, Music, Wand2, Palette, FileAudio } from "lucide-react";
+   620→import { useJobSocket } from "@/hooks/use-job-socket";
+   621→import { cn } from "@/lib/utils";
+   622→
+   623→const STEP_MESSAGES: Record<string, string> = {
+   624→  queued: "Waiting in queue...",
+   625→  lyrics: "Writing lyrics...",
+   626→  audio: "Generating music with ACE-Step...",
+   627→  cover: "Creating album artwork...",
+   628→  completing: "Finalizing your track...",
+   629→  completed: "Track ready!",
+   630→  failed: "Generation failed",
+   631→};
+   632→
+   633→const STEP_ICONS: Record<string, React.ReactNode> = {
+   634→  queued: <Clock className="size-5" />,
+   635→  lyrics: <Wand2 className="size-5" />,
+   636→  audio: <Music className="size-5" />,
+   637→  cover: <Palette className="size-5" />,
+   638→  completed: <CheckCircle className="size-5 text-green-400" />,
+   639→  failed: <XCircle className="size-5 text-rose-400" />,
+   640→};
+   641→
+   642→interface Props {
+   643→  jobId: string;
+   644→  onCancel: () => void;
+   645→  onComplete?: (songId: string) => void;
+   646→}
+   647→
+   648→export function GenerationLoader({ jobId, onCancel, onComplete }: Props) {
+   649→  const { status, progress, error, songId } = useJobSocket(jobId);
+   650→
+   651→  useEffect(() => {
+   652→    if (status === "completed" && songId) onComplete?.(songId);
+   653→  }, [status, songId, onComplete]);
+   654→
+   655→  const isFailed = status === "failed";
+   656→  const isDone = status === "completed";
+   657→
+   658→  return (
+   659→    <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-6">
+   660→      <div className="mb-4 flex items-center justify-between">
+   661→        <div className="flex items-center gap-3">
+   662→          {status === "queued" || status === "lyrics" || status === "audio" || status === "cover" ? (
+   663→            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }}>
+   664→              <Loader2 className="size-6 text-fuchsia-400" />
+   665→            </motion.div>
+   666→          ) : (
+   667→            STEP_ICONS[status] || null
+   668→          )}
+   669→          <div>
+   670→            <p className="text-sm font-semibold text-foreground">
+   671→              {STEP_MESSAGES[status] || "Processing..."}
+   672→            </p>
+   673→            <p className="text-xs text-muted-foreground">
+   674→              {isDone ? "Ready to play" : isFailed ? error?.slice(0, 100) : `${Math.round(progress * 100)}%`}
+   675→            </p>
+   676→          </div>
+   677→        </div>
+   678→        {!isDone && !isFailed && (
+   679→          <button onClick={onCancel} className="text-xs text-muted-foreground hover:text-rose-300 transition-colors">
+   680→            Cancel
+   681→          </button>
+   682→        )}
+   683→      </div>
+   684→
+   685→      {/* Progress bar */}
+   686→      <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+   687→        <motion.div
+   688→          className={cn("h-full rounded-full", isFailed ? "bg-rose-500" : "bg-gradient-to-r from-fuchsia-500 to-violet-500")}
+   689→          initial={{ width: 0 }}
+   690→          animate={{ width: `${progress * 100}%` }}
+   691→          transition={{ duration: 0.3 }}
+   692→        />
+   693→      </div>
+   694→
+   695→      {/* Timeline */}
+   696→      <div className="mt-4 flex justify-between">
+   697→        {["queued", "lyrics", "audio", "cover", "completed"].map((step, i) => {
+   698→          const stepIdx = ["queued", "lyrics", "audio", "cover", "completed"].indexOf(status);
+   699→          const isActive = i <= stepIdx;
+   700→          return (
+   701→            <div key={step} className={cn("flex flex-col items-center gap-1", isActive ? "text-fuchsia-300" : "text-white/20")}>
+   702→              <div className={cn("size-2 rounded-full", isActive ? "bg-fuchsia-400" : "bg-white/10")} />
+   703→              <span className="text-[10px]">{STEP_MESSAGES[step]?.split(".")[0]}</span>
+   704→            </div>
+   705→          );
+   706→        })}
+   707→      </div>
+   708→    </div>
+   709→  );
+   710→}
+   711→```
+   712→
+   713→#### Tâche 2.4 : Bot Discord
+   714→
+   715→Créer dossier `discord-bot/`.
+   716→
+   717→Fichier : `discord-bot/package.json`
+   718→```json
+   719→{
+   720→  "name": "spotibot-discord",
+   721→  "private": true,
+   722→  "scripts": {
+   723→    "dev": "tsx watch index.ts",
+   724→    "start": "tsx index.ts",
+   725→    "deploy-commands": "tsx deploy-commands.ts"
+   726→  },
+   727→  "dependencies": {
+   728→    "discord.js": "^14.0.0",
+   729→    "ioredis": "^5.0.0",
+   730→    "bullmq": "^5.0.0",
+   731→    "zod": "^4.0.0"
+   732→  },
+   733→  "devDependencies": {
+   734→    "tsx": "^4.0.0",
+   735→    "typescript": "^5.0.0"
+   736→  }
+   737→}
+   738→```
+   739→
+   740→Fichier : `discord-bot/deploy-commands.ts`
+   741→```typescript
+   742→import { REST, Routes, SlashCommandBuilder } from "discord.js";
+   743→
+   744→const commands = [
+   745→  new SlashCommandBuilder()
+   746→    .setName("generate")
+   747→    .setDescription("Generate a new AI song")
+   748→    .addStringOption(o => o.setName("prompt").setDescription("Describe the song").setRequired(true))
+   749→    .addStringOption(o => o.setName("genre").setDescription("Music genre").setChoices(
+   750→      { name: "Pop", value: "Pop" }, { name: "Rock", value: "Rock" }, { name: "Hip-Hop", value: "Hip-Hop" },
+   751→      { name: "Electronic", value: "Electronic" }, { name: "R&B", value: "R&B" }, { name: "Jazz", value: "Jazz" },
+   752→      { name: "Classical", value: "Classical" }, { name: "Ambient", value: "Ambient" }, { name: "Lo-Fi", value: "Lo-Fi" },
+   753→    ))
+   754→    .addStringOption(o => o.setName("mood").setDescription("Emotional mood").setChoices(
+   755→      { name: "Energetic", value: "Energetic" }, { name: "Happy", value: "Happy" }, { name: "Romantic", value: "Romantic" },
+   756→      { name: "Melancholic", value: "Melancholic" }, { name: "Calm", value: "Calm" }, { name: "Dark", value: "Dark" },
+   757→      { name: "Dreamy", value: "Dreamy" }, { name: "Epic", value: "Epic" },
+   758→    ))
+   759→    .addStringOption(o => o.setName("style").setDescription("Vocal style").setChoices(
+   760→      { name: "Male Vocal", value: "Male Vocal" }, { name: "Female Vocal", value: "Female Vocal" },
+   761→      { name: "Instrumental", value: "Instrumental Focus" }, { name: "Choir", value: "Choir" },
+   762→    ))
+   763→    .addIntegerOption(o => o.setName("duration").setDescription("Duration in seconds (10-300)").setMinValue(10).setMaxValue(300)),
+   764→
+   765→  new SlashCommandBuilder()
+   766→    .setName("status")
+   767→    .setDescription("Check generation status")
+   768→    .addStringOption(o => o.setName("jobid").setDescription("Job ID from /generate").setRequired(true)),
+   769→
+   770→  new SlashCommandBuilder()
+   771→    .setName("library")
+   772→    .setDescription("List your generated songs"),
+   773→].map(c => c.toJSON());
+   774→
+   775→const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN!);
+   776→
+   777→(async () => {
+   778→  try {
+   779→    await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID!), { body: commands });
+   780→    console.log("Commands registered!");
+   781→  } catch (err) {
+   782→    console.error(err);
+   783→  }
+   784→})();
+   785→```
+   786→
+   787→Fichier : `discord-bot/index.ts`
+   788→```typescript
+   789→import { Client, GatewayIntentBits, Events, EmbedBuilder } from "discord.js";
+   790→import Redis from "ioredis";
+   791→import { Queue } from "bullmq";
+   792→
+   793→const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+   794→const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+   795→const generateQueue = new Queue("ace:generate", { connection: redis });
+   796→
+   797→client.on(Events.InteractionCreate, async (interaction) => {
+   798→  if (!interaction.isChatInputCommand()) return;
+   799→
+   800→  if (interaction.commandName === "generate") {
+   801→    await interaction.deferReply();
+   802→    const prompt = interaction.options.getString("prompt", true);
+   803→    const genre = interaction.options.getString("genre") || "Pop";
+   804→    const mood = interaction.options.getString("mood") || "Energetic";
+   805→    const style = interaction.options.getString("style") || "Male Vocal";
+   806→    const duration = interaction.options.getInteger("duration") || 30;
+   807→
+   808→    try {
+   809→      const job = await generateQueue.add("generate", {
+   810→        userId: `discord:${interaction.user.id}`,
+   811→        prompt, genre, mood, style, duration,
+   812→        caption: `${prompt}, ${genre}, ${mood.toLowerCase()}`,
+   813→      });
+   814→
+   815→      const embed = new EmbedBuilder()
+   816→        .setColor(0xBE185D)
+   817→        .setTitle("🎵 Generation Queued")
+   818→        .addFields(
+   819→          { name: "Prompt", value: prompt, inline: false },
+   820→          { name: "Job ID", value: `\`${job.id}\``, inline: true },
+   821→          { name: "Status", value: "⏳ Queued...", inline: true },
+   822→        )
+   823→        .setFooter({ text: "Use /status to check progress" });
+   824→
+   825→      await interaction.editReply({ embeds: [embed] });
+   826→
+   827→      // Polling status updates via Redis
+   828→      const subscriber = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
+   829→      subscriber.subscribe(`job:${job.id}`);
+   830→      subscriber.on("message", async (_, message) => {
+   831→        const data = JSON.parse(message);
+   832→        if (data.status === "completed") {
+   833→          const songEmbed = new EmbedBuilder()
+   834→            .setColor(0x10B981)
+   835→            .setTitle("✅ Generation Complete!")
+   836→            .addFields({ name: "Song ID", value: data.songId, inline: true })
+   837→            .setURL(`${process.env.APP_URL}/track/${data.songId}`);
+   838→          await interaction.editReply({ embeds: [songEmbed] });
+   839→          subscriber.quit();
+   840→        } else if (data.status === "failed") {
+   841→          const failEmbed = new EmbedBuilder()
+   842→            .setColor(0xEF4444)
+   843→            .setTitle("❌ Generation Failed")
+   844→            .addFields({ name: "Error", value: data.error?.slice(0, 200) || "Unknown" });
+   845→          await interaction.editReply({ embeds: [failEmbed] });
+   846→          subscriber.quit();
+   847→        } else {
+   848→          const progressMsg = `${data.status === "lyrics" ? "✍️ Writing lyrics..." : data.status === "audio" ? "🎵 Generating music..." : data.status === "cover" ? "🎨 Creating cover..." : "⏳ Processing..."}`;
+   849→          await interaction.editReply({ embeds: [
+   850→            new EmbedBuilder()
+   851→              .setColor(0xBE185D)
+   852→              .setTitle("🎵 Generation In Progress")
+   853→              .addFields({ name: "Status", value: `${progressMsg} (${Math.round(data.progress * 100)}%)` })
+   854→          ]});
+   855→        }
+   856→      });
+   857→    } catch (err) {
+   858→      await interaction.editReply("❌ Failed to queue generation.");
+   859→    }
+   860→  }
+   861→
+   862→  if (interaction.commandName === "status") {
+   863→    const jobId = interaction.options.getString("jobid", true);
+   864→    const job = await generateQueue.getJob(jobId);
+   865→    if (!job) return interaction.reply("❌ Job not found.");
+   866→    const embed = new EmbedBuilder()
+   867→      .setColor(0xBE185D)
+   868→      .setTitle("📊 Generation Status")
+   869→      .addFields(
+   870→        { name: "Job ID", value: `\`${job.id}\`` },
+   871→        { name: "Status", value: job.finishedOn ? "✅ Completed" : job.failedReason ? "❌ Failed" : "⏳ Processing..." },
+   872→        { name: "Progress", value: `${Math.round((job.progress || 0) * 100)}%` },
+   873→      );
+   874→    await interaction.reply({ embeds: [embed] });
+   875→  }
+   876→
+   877→  if (interaction.commandName === "library") {
+   878→    // TODO: requêter la DB PostgreSQL
+   879→    await interaction.reply("📚 Library feature coming soon!");
+   880→  }
+   881→});
+   882→
+   883→client.login(process.env.DISCORD_TOKEN!);
+   884→```
+   885→
+   886→### PHASE 3 : Features Avancées ACE-Step (Semaine 5-6)
+   887→
+   888→#### Tâche 3.1 : API Remix (Audio2Audio)
+   889→
+   890→Fichier : `src/app/api/remix/route.ts`
+   891→```typescript
+   892→import { NextRequest, NextResponse } from "next/server";
+   893→import { remixQueue } from "@/lib/queue";
+   894→import { getCurrentUserId } from "@/lib/session";
+   895→
+   896→export async function POST(req: NextRequest) {
+   897→  const userId = await getCurrentUserId();
+   898→  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   899→
+   900→  const formData = await req.formData();
+   901→  const file = formData.get("file") as File | null;
+   902→  const prompt = formData.get("prompt") as string;
+   903→
+   904→  if (!file || !prompt) return NextResponse.json({ error: "file and prompt required" }, { status: 400 });
+   905→
+   906→  // Upload file to S3 temporaire
+   907→  const buffer = Buffer.from(await file.arrayBuffer());
+   908→  const uploadKey = `uploads/${userId}/${Date.now()}_${file.name}`;
+   909→  // ... uploadToS3 ...
+   910→
+   911→  const job = await remixQueue.add("remix", {
+   912→    userId,
+   913→    prompt,
+   914→    audioUrl: uploadKey,
+   915→    duration: parseInt(formData.get("duration") as string) || 30,
+   916→  });
+   917→
+   918→  return NextResponse.json({ jobId: job.id, status: "queued" }, { status: 202 });
+   919→}
+   920→```
+   921→
+   922→#### Tâche 3.2 : API Edit Lyrics (flow-edit)
+   923→
+   924→Fichier : `src/app/api/edit-lyrics/route.ts`
+   925→```typescript
+   926→import { NextRequest, NextResponse } from "next/server";
+   927→import { editQueue } from "@/lib/queue";
+   928→import { getCurrentUserId } from "@/lib/session";
+   929→import { db } from "@/lib/db";
+   930→
+   931→export async function POST(req: NextRequest) {
+   932→  const userId = await getCurrentUserId();
+   933→  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+   934→
+   935→  const { songId, newLyrics } = await req.json();
+   936→  const song = await db.song.findUnique({ where: { id: songId } });
+   937→  if (!song || song.ownerId !== userId) return NextResponse.json({ error: "Not found" }, { status: 404 });
+   938→
+   939→  const job = await editQueue.add("edit", {
+   940→    userId,
+   941→    songId,
+   942→    audioUrl: song.audioUrl,
+   943→    originalLyrics: song.lyrics,
+   944→    newLyrics,
+   945→    prompt: song.prompt,
+   946→  });
+   947→
+   948→  return NextResponse.json({ jobId: job.id, status: "queued" }, { status: 202 });
+   949→}
+   950→```
+   951→
+   952→#### Tâche 3.3 : Handler Remix dans le Worker
+   953→
+   954→Fichier : `worker/handlers/ace-step.ts` — ajouter :
+   955→```typescript
+   956→export async function remixAudio(audioUrl: string, prompt: string, duration: number): Promise<Buffer> {
+   957→  // Télécharger le fichier source
+   958→  const audioRes = await fetch(audioUrl);
+   959→  const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+   960→
+   961→  // Envoyer à ACE-Step Audio2Audio
+   962→  const formData = new FormData();
+   963→  formData.append("audio", new Blob([audioBuffer]));
+   964→  formData.append("prompt", prompt);
+   965→  formData.append("audio_duration", String(duration));
+   966→
+   967→  const res = await fetch(`${ACE_STEP_API}/audio2audio`, {
+   968→    method: "POST",
+   969→    body: formData,
+   970→    signal: AbortSignal.timeout(300_000),
+   971→  });
+   972→
+   973→  if (!res.ok) throw new Error(`Remix failed: ${await res.text()}`);
+   974→  const result = await res.json();
+   975→  const audioRes2 = await fetch(`${ACE_STEP_API}/outputs/${result.output_path}`);
+   976→  return Buffer.from(await audioRes2.arrayBuffer());
+   977→}
+   978→
+   979→export async function editLyrics(audioUrl: string, originalLyrics: string, newLyrics: string, prompt: string): Promise<Buffer> {
+   980→  const res = await fetch(`${ACE_STEP_API}/edit`, {
+   981→    method: "POST",
+   982→    headers: { "Content-Type": "application/json" },
+   983→    body: JSON.stringify({
+   984→      audio_url: audioUrl,
+   985→      original_lyrics: originalLyrics,
+   986→      new_lyrics: newLyrics,
+   987→      prompt,
+   988→      edit_type: "only_lyrics", // preserve melody
+   989→    }),
+   990→    signal: AbortSignal.timeout(300_000),
+   991→  });
+   992→
+   993→  if (!res.ok) throw new Error(`Edit failed: ${await res.text()}`);
+   994→  const result = await res.json();
+   995→  const audioRes = await fetch(`${ACE_STEP_API}/outputs/${result.output_path}`);
+   996→  return Buffer.from(await audioRes.arrayBuffer());
+   997→}
+   998→```
+   999→
+  1000→#### Tâche 3.4 : Composant UI Lyrics Editor
+  1001→
+  1002→Fichier : `src/components/music/lyrics-editor.tsx`
+  1003→```typescript
+  1004→"use client";
+  1005→
+  1006→import { useState } from "react";
+  1007→import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+  1008→import { Button } from "@/components/ui/button";
+  1009→import { Textarea } from "@/components/ui/textarea";
+  1010→import { useJobSocket } from "@/hooks/use-job-socket";
+  1011→import { GenerationLoader } from "./generation-loader";
+  1012→import { toast } from "sonner";
+  1013→
+  1014→interface Props {
+  1015→  songId: string;
+  1016→  initialLyrics: string;
+  1017→  open: boolean;
+  1018→  onOpenChange: (open: boolean) => void;
+  1019→  onSaved: (newLyrics: string) => void;
+  1020→}
+  1021→
+  1022→export function LyricsEditor({ songId, initialLyrics, open, onOpenChange, onSaved }: Props) {
+  1023→  const [lyrics, setLyrics] = useState(initialLyrics);
+  1024→  const [jobId, setJobId] = useState<string | null>(null);
+  1025→  const [isEditing, setIsEditing] = useState(false);
+  1026→
+  1027→  const handleSave = async () => {
+  1028→    setIsEditing(true);
+  1029→    const res = await fetch("/api/edit-lyrics", {
+  1030→      method: "POST",
+  1031→      headers: { "Content-Type": "application/json" },
+  1032→      body: JSON.stringify({ songId, newLyrics: lyrics }),
+  1033→    });
+  1034→    if (!res.ok) { toast.error("Failed to edit lyrics"); setIsEditing(false); return; }
+  1035→    const { jobId: jid } = await res.json();
+  1036→    setJobId(jid);
+  1037→  };
+  1038→
+  1039→  const handleComplete = () => {
+  1040→    onSaved(lyrics);
+  1041→    onOpenChange(false);
+  1042→    setIsEditing(false);
+  1043→    setJobId(null);
+  1044→  };
+  1045→
+  1046→  return (
+  1047→    <Dialog open={open} onOpenChange={onOpenChange}>
+  1048→      <DialogContent className="max-w-2xl">
+  1049→        <DialogHeader>
+  1050→          <DialogTitle>Edit Lyrics</DialogTitle>
+  1051→          <DialogDescription>Modify the lyrics while preserving the original melody</DialogDescription>
+  1052→        </DialogHeader>
+  1053→        {jobId ? (
+  1054→          <GenerationLoader jobId={jobId} onCancel={() => setJobId(null)} onComplete={handleComplete} />
+  1055→        ) : (
+  1056→          <>
+  1057→            <Textarea value={lyrics} onChange={(e) => setLyrics(e.target.value)} className="min-h-[300px] font-mono text-sm" />
+  1058→            <Button onClick={handleSave} disabled={isEditing || lyrics === initialLyrics} className="bg-fuchsia-500 hover:bg-fuchsia-400">
+  1059→              {isEditing ? "Updating..." : "Apply Changes"}
+  1060→            </Button>
+  1061→          </>
+  1062→        )}
+  1063→      </DialogContent>
+  1064→    </Dialog>
+  1065→  );
+  1066→}
+  1067→```
+  1068→
+  1069→### PHASE 4 : Docker & Déploiement (Semaine 7-8)
+  1070→
+  1071→#### Tâche 4.1 : Dockerfile ACE-Step modifié
+  1072→
+  1073→Fichier : `docker/ace-step/Dockerfile`
+  1074→```dockerfile
+  1075→FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+  1076→
+  1077→RUN apt-get update && apt-get install -y python3.10 python3-pip git curl && apt-get clean
+  1078→RUN python3 -m pip install --upgrade pip
+  1079→
+  1080→WORKDIR /app
+  1081→RUN git clone https://github.com/ace-step/ACE-Step.git .
+  1082→RUN pip3 install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
+  1083→RUN pip3 install -e . uvicorn fastapi python-multipart
+  1084→
+  1085→# Notre API FastAPI modifiée
+  1086→COPY infer-api-mod.py /app/infer-api.py
+  1087→
+  1088→EXPOSE 8000
+  1089→CMD ["uvicorn", "infer-api:app", "--host", "0.0.0.0", "--port", "8000"]
+  1090→```
+  1091→
+  1092→#### Tâche 4.2 : API FastAPI ACE-Step modifiée
+  1093→
+  1094→Fichier : `docker/ace-step/infer-api-mod.py`
+  1095→```python
+  1096→"""
+  1097→API FastAPI asynchrone pour ACE-Step avec file d'attente locale et webhook.
+  1098→"""
+  1099→from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+  1100→from pydantic import BaseModel
+  1101→from typing import Optional
+  1102→import os, uuid, asyncio
+  1103→from acestep.pipeline_ace_step import ACEStepPipeline
+  1104→from contextlib import asynccontextmanager
+  1105→
+  1106→pipeline: Optional[ACEStepPipeline] = None
+  1107→
+  1108→@asynccontextmanager
+  1109→async def lifespan(app: FastAPI):
+  1110→    global pipeline
+  1111→    pipeline = ACEStepPipeline(
+  1112→        checkpoint_dir=os.environ.get("CHECKPOINT_PATH", ""),
+  1113→        dtype="bfloat16" if os.environ.get("BF16", "true") == "true" else "float32",
+  1114→        torch_compile=True,
+  1115→        cpu_offload=True,
+  1116→        overlapped_decode=True,
+  1117→    )
+  1118→    yield
+  1119→
+  1120→app = FastAPI(title="ACE-Step API", lifespan=lifespan)
+  1121→
+  1122→class GenerateRequest(BaseModel):
+  1123→    prompt: str
+  1124→    lyrics: str = ""
+  1125→    audio_duration: float = 30.0
+  1126→    infer_step: int = 27
+  1127→    guidance_scale: float = 15.0
+  1128→    scheduler_type: str = "euler"
+  1129→    cfg_type: str = "apg"
+  1130→    omega_scale: float = 10.0
+  1131→    actual_seeds: list[int] = []
+  1132→    guidance_interval: float = 0.5
+  1133→    guidance_interval_decay: float = 0.0
+  1134→    min_guidance_scale: float = 3.0
+  1135→    use_erg_tag: bool = True
+  1136→    use_erg_lyric: bool = True
+  1137→    use_erg_diffusion: bool = True
+  1138→    oss_steps: list[int] = []
+  1139→    guidance_scale_text: float = 0.0
+  1140→    guidance_scale_lyric: float = 0.0
+  1141→
+  1142→@app.post("/generate")
+  1143→async def generate(req: GenerateRequest):
+  1144→    global pipeline
+  1145→    if not pipeline:
+  1146→        raise HTTPException(503, "Pipeline not initialized")
+  1147→    
+  1148→    output_path = f"/app/outputs/{uuid.uuid4().hex}.wav"
+  1149→    seeds = req.actual_seeds or [os.urandom(4)]
+  1150→    
+  1151→    try:
+  1152→        # Exécution synchrone mais dans un thread pool
+  1153→        loop = asyncio.get_event_loop()
+  1154→        await loop.run_in_executor(None, lambda: pipeline(
+  1155→            audio_duration=req.audio_duration,
+  1156→            prompt=req.prompt,
+  1157→            lyrics=req.lyrics,
+  1158→            infer_step=req.infer_step,
+  1159→            guidance_scale=req.guidance_scale,
+  1160→            scheduler_type=req.scheduler_type,
+  1161→            cfg_type=req.cfg_type,
+  1162→            omega_scale=req.omega_scale,
+  1163→            manual_seeds=", ".join(map(str, seeds)),
+  1164→            guidance_interval=req.guidance_interval,
+  1165→            guidance_interval_decay=req.guidance_interval_decay,
+  1166→            min_guidance_scale=req.min_guidance_scale,
+  1167→            use_erg_tag=req.use_erg_tag,
+  1168→            use_erg_lyric=req.use_erg_lyric,
+  1169→            use_erg_diffusion=req.use_erg_diffusion,
+  1170→            oss_steps=", ".join(map(str, req.oss_steps)),
+  1171→            guidance_scale_text=req.guidance_scale_text,
+  1172→            guidance_scale_lyric=req.guidance_scale_lyric,
+  1173→            save_path=output_path,
+  1174→        ))
+  1175→        return {"status": "success", "output_path": output_path, "seed_used": seeds[0]}
+  1176→    except Exception as e:
+  1177→        raise HTTPException(500, str(e))
+  1178→
+  1179→@app.get("/health")
+  1180→async def health():
+  1181→    return {"status": "healthy", "pipeline_loaded": pipeline is not None}
+  1182→```
+  1183→
+  1184→#### Tâche 4.3 : docker-compose.yml racine
+  1185→
+  1186→Fichier : `docker-compose.yml`
+  1187→```yaml
+  1188→services:
+  1189→  redis:
+  1190→    image: redis:7-alpine
+  1191→    ports: ["6379:6379"]
+  1192→    volumes: ["redis-data:/data"]
+  1193→    restart: unless-stopped
+  1194→
+  1195→  postgres:
+  1196→    image: postgres:16-alpine
+  1197→    ports: ["5432:5432"]
+  1198→    environment:
+  1199→      POSTGRES_USER: spotibot
+  1200→      POSTGRES_PASSWORD: ${DB_PASSWORD}
+  1201→      POSTGRES_DB: spotibot
+  1202→    volumes: ["postgres-data:/var/lib/postgresql/data"]
+  1203→    restart: unless-stopped
+  1204→
+  1205→  ace-step:
+  1206→    build: ./docker/ace-step
+  1207→    ports: ["8000:8000"]
+  1208→    environment:
+  1209→      - CHECKPOINT_PATH=/checkpoints
+  1210→      - BF16=true
+  1211→      - CUDA_VISIBLE_DEVICES=0
+  1212→    volumes:
+  1213→      - ace-checkpoints:/checkpoints
+  1214→      - ace-outputs:/app/outputs
+  1215→    runtime: nvidia
+  1216→    deploy:
+  1217→      resources:
+  1218→        reservations:
+  1219→          devices: [{ driver: nvidia, count: all, capabilities: [compute, utility] }]
+  1220→    restart: unless-stopped
+  1221→
+  1222→  worker:
+  1223→    build: ./worker
+  1224→    depends_on: [redis, postgres]
+  1225→    environment:
+  1226→      - REDIS_URL=redis://redis:6379
+  1227→      - DATABASE_URL=postgresql://spotibot:${DB_PASSWORD}@postgres:5432/spotibot
+  1228→      - ACE_STEP_API=http://ace-step:8000
+  1229→      - S3_ENDPOINT=${S3_ENDPOINT}
+  1230→      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+  1231→      - S3_SECRET_KEY=${S3_SECRET_KEY}
+  1232→      - S3_BUCKET=${S3_BUCKET}
+  1233→    restart: unless-stopped
+  1234→
+  1235→  socket-server:
+  1236→    build: ./mini-services/socket-server
+  1237→    depends_on: [redis]
+  1238→    ports: ["3001:3001"]
+  1239→    environment:
+  1240→      - REDIS_URL=redis://redis:6379
+  1241→      - CORS_ORIGIN=${CORS_ORIGIN}
+  1242→    restart: unless-stopped
+  1243→
+  1244→volumes:
+  1245→  redis-data:
+  1246→  postgres-data:
+  1247→  ace-checkpoints:
+  1248→  ace-outputs:
+  1249→```
+  1250→
+  1251→### PHASE 5 : Social Features & Production (Semaine 9-12)
+  1252→
+  1253→#### Tâche 5.1 : Discover Feed
+  1254→
+  1255→Fichier : `src/app/api/discover/route.ts`
+  1256→```typescript
+  1257→import { NextResponse } from "next/server";
+  1258→import { db } from "@/lib/db";
+  1259→
+  1260→export async function GET(req: Request) {
+  1261→  const { searchParams } = new URL(req.url);
+  1262→  const page = parseInt(searchParams.get("page") || "1");
+  1263→  const limit = 20;
+  1264→  const genre = searchParams.get("genre");
+  1265→
+  1266→  const songs = await db.song.findMany({
+  1267→    where: { isPublic: true, ...(genre ? { genre } : {}) },
+  1268→    orderBy: [{ playCount: "desc" }, { createdAt: "desc" }],
+  1269→    skip: (page - 1) * limit,
+  1270→    take: limit,
+  1271→    include: { owner: { select: { name: true, image: true } } },
+  1272→  });
+  1273→
+  1274→  return NextResponse.json(songs);
+  1275→}
+  1276→```
+  1277→
+  1278→#### Tâche 5.2 : Profils Publics
+  1279→
+  1280→Fichier : `src/app/api/profile/[username]/route.ts`
+  1281→```typescript
+  1282→import { NextRequest, NextResponse } from "next/server";
+  1283→import { db } from "@/lib/db";
+  1284→
+  1285→export async function GET(req: NextRequest, { params }: { params: { username: string } }) {
+  1286→  const user = await db.user.findUnique({
+  1287→    where: { username: params.username },
+  1288→    select: {
+  1289→      id: true, name: true, username: true, bio: true, image: true, createdAt: true,
+  1290→      _count: { select: { songs: true, followers: true, following: true } },
+  1291→    },
+  1292→  });
+  1293→  if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  1294→
+  1295→  const songs = await db.song.findMany({
+  1296→    where: { ownerId: user.id, isPublic: true },
+  1297→    orderBy: { createdAt: "desc" },
+  1298→    take: 20,
+  1299→  });
+  1300→
+  1301→  return NextResponse.json({ ...user, songs });
+  1302→}
+  1303→```
+  1304→
+  1305→#### Tâche 5.3 : Rate Limiting distribué (Upstash)
+  1306→
+  1307→Fichier : `src/lib/rate-limit.ts`
+  1308→```typescript
+  1309→import { Ratelimit } from "@upstash/ratelimit";
+  1310→import { Redis } from "@upstash/redis";
+  1311→
+  1312→export const rateLimit = new Ratelimit({
+  1313→  redis: Redis.fromEnv(),
+  1314→  limiter: Ratelimit.slidingWindow(8, "1 m"),
+  1315→  analytics: true,
+  1316→  prefix: "spotibot:generate",
+  1317→});
+  1318→```
+  1319→
+  1320→Mettre à jour `POST /api/generate` :
+  1321→```typescript
+  1322→import { rateLimit } from "@/lib/rate-limit";
+  1323→
+  1324→const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || "unknown";
+  1325→const { success, remaining } = await rateLimit.limit(ip);
+  1326→if (!success) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429, headers: { "X-RateLimit-Remaining": String(remaining) } });
+  1327→```
+  1328→
+  1329→## CHECKLIST FINALE
+  1330→
+  1331→- [ ] `prisma/schema.prisma` modifié (PostgreSQL, Song.status/jobId/playCount/audioUrl/coverUrl, GenerationJob)
+  1332→- [ ] `src/lib/queue.ts` — BullMQ queues
+  1333→- [ ] `src/app/api/generate/route.ts` — asynchrone (retourne jobId)
+  1334→- [ ] `src/app/api/jobs/[id]/route.ts` — status endpoint
+  1335→- [ ] `worker/index.ts` — Worker complet
+  1336→- [ ] `worker/handlers/lyrics.ts` — LLM lyricist standalone
+  1337→- [ ] `worker/handlers/ace-step.ts` — Client ACE-Step API
+  1338→- [ ] `mini-services/socket-server/index.ts` — Socket.io
+  1339→- [ ] `src/hooks/use-job-socket.ts` — Hook client
+  1340→- [ ] `src/components/music/generation-loader.tsx` — Nouveau loader temps réel
+  1341→- [ ] `discord-bot/` — Bot Discord complet
+  1342→- [ ] `src/app/api/remix/route.ts` — Audio2Audio
+  1343→- [ ] `src/app/api/edit-lyrics/route.ts` — Flow-edit
+  1344→- [ ] `docker/ace-step/Dockerfile` + `infer-api-mod.py`
+  1345→- [ ] `docker-compose.yml` — Tous les services
+  1346→- [ ] `src/app/api/discover/route.ts` — Feed public
+  1347→- [ ] `src/app/api/profile/[username]/route.ts` — Profils
+  1348→- [ ] `src/lib/rate-limit.ts` — Upstash rate limiting
+  1349→- [ ] Test complet : Frontend → API → Queue → Worker → ACE-Step → S3 → DB → WebSocket
+  1350→
