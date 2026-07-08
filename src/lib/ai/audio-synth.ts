@@ -34,7 +34,7 @@
  * SERVER-ONLY. Imported by API route handlers; never bundled for the client.
  */
 
-import { generateMusic } from "./ace-client";
+import { generateMusic, RateLimitError } from "./ace-client";
 
 /** Successful synthesis result: an audio buffer + format tag. */
 export interface SynthResult {
@@ -135,6 +135,10 @@ export async function synthesizeAudio(params: SynthParams): Promise<SynthResult>
       seedUsed: result.seedUsed,
     };
   } catch (err) {
+    // Preserve RateLimitError so the API route can read retryAfterSeconds.
+    if (err instanceof RateLimitError) {
+      throw err;
+    }
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(`Audio synthesis failed: ${cause}`);
   }

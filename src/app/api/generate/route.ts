@@ -39,7 +39,7 @@ import {
   TIME_SIGNATURES,
   STYLE_TO_CAPTION,
 } from "@/lib/types";
-import { generateLyrics, synthesizeAudio, generateCover } from "@/lib/ai";
+import { generateLyrics, synthesizeAudio, generateCover, RateLimitError } from "@/lib/ai";
 import { toPublicSong } from "@/lib/song-mapper";
 
 // ---------------------------------------------------------------------------
@@ -276,6 +276,25 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // Log server-side for debugging; never leak internals to the client.
     console.error("generate: failed to generate song", err);
+
+    // Rate limit: surface a clean message + the retry countdown so the UI can
+    // show a friendly "try again in X minutes" instead of the raw Chinese blob.
+    if (err instanceof RateLimitError) {
+      const minutes = Math.ceil(err.retryAfterSeconds / 60);
+      const friendly =
+        minutes > 0
+          ? `Ace Music rate limit reached. Please try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`
+          : "Ace Music rate limit reached. Please try again shortly.";
+      return NextResponse.json(
+        {
+          error: friendly,
+          retryAfterSeconds: err.retryAfterSeconds,
+          quota: err.quota,
+        },
+        { status: 429 },
+      );
+    }
+
     const msg = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
       {

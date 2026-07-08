@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "@/hooks/use-toast";
 import type { GenerateRequest, Playlist, Song } from "@/lib/types";
@@ -53,6 +53,29 @@ export default function Home() {
   const [activePlaylistSongs, setActivePlaylistSongs] = useState<Song[]>([]);
   const [activePlaylistMeta, setActivePlaylistMeta] = useState<Playlist | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  /** Timestamp (ms epoch) until which generation is rate-limited. Null = no limit. */
+  const [rateLimitUntil, setRateLimitUntil] = useState<number | null>(null);
+  /** Live seconds remaining until the rate limit resets (0 when no limit). */
+  const [rateLimitSecondsLeft, setRateLimitSecondsLeft] = useState(0);
+
+  // Countdown effect: tick every second while a rate limit is active, and
+  // clear it (re-enabling generation) when the timer hits zero.
+  useEffect(() => {
+    if (!rateLimitUntil) {
+      setRateLimitSecondsLeft(0);
+      return;
+    }
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((rateLimitUntil - Date.now()) / 1000));
+      setRateLimitSecondsLeft(remaining);
+      if (remaining <= 0) {
+        setRateLimitUntil(null);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [rateLimitUntil]);
   const [search, setSearch] = useState("");
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const { toast } = useToast();
@@ -99,6 +122,7 @@ export default function Home() {
   const handleGenerate = useCallback(
     async (req: GenerateRequest): Promise<Song> => {
       setIsGenerating(true);
+      setRateLimitUntil(null); // clear any previous rate-limit state
       const controller = new AbortController();
       generateAbortRef.current = controller;
       try {
@@ -110,11 +134,25 @@ export default function Home() {
         });
         if (!res.ok) {
           let message = `Generation failed (${res.status})`;
+          let retryAfterSeconds = 0;
           try {
-            const data = (await res.json()) as { error?: string };
+            const data = (await res.json()) as {
+              error?: string;
+              retryAfterSeconds?: number;
+              quota?: number | null;
+            };
             if (data?.error) message = data.error;
+            if (typeof data?.retryAfterSeconds === "number") {
+              retryAfterSeconds = data.retryAfterSeconds;
+            }
           } catch {
             /* ignore */
+          }
+          // 429 = rate limited. Record the unlock time so the UI can show a
+          // live countdown + disable the generate button until it elapses.
+          if (res.status === 429 && retryAfterSeconds > 0) {
+            const until = Date.now() + retryAfterSeconds * 1000;
+            setRateLimitUntil(until);
           }
           throw new Error(message);
         }
@@ -338,7 +376,11 @@ export default function Home() {
                     </div>
                   ) : (
                     <div className="mx-auto max-w-2xl">
-                      <PromptComposer loading={isGenerating} onGenerate={handleGenerate} />
+                      <PromptComposer
+                        loading={isGenerating}
+                        onGenerate={handleGenerate}
+                        rateLimitSecondsLeft={rateLimitSecondsLeft}
+                      />
                     </div>
                   )}
 

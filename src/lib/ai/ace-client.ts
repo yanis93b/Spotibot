@@ -66,6 +66,52 @@ const ACE_API_KEY = process.env.ACE_API_KEY || "";
 const ACE_MODEL = process.env.ACE_MODEL || "acemusic/acestep-v1.5-turbo";
 const ACE_REQUEST_TIMEOUT_MS = Number(process.env.ACE_REQUEST_TIMEOUT_MS) || 300000;
 
+/**
+ * Error thrown when the Ace Music API returns HTTP 429 (rate limit exceeded).
+ * Carries a parsed `retryAfterSeconds` so the UI can show a countdown instead
+ * of a raw error blob.
+ */
+export class RateLimitError extends Error {
+  /** Seconds until the rate limit resets (best-effort parse; 0 if unknown). */
+  retryAfterSeconds: number;
+  /** The hourly request quota, when the server mentions it. */
+  quota: number | null;
+
+  constructor(message: string, retryAfterSeconds = 0, quota: number | null = null) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.quota = quota;
+  }
+}
+
+/**
+ * Parse the Chinese rate-limit message returned by the Ace Music API, e.g.:
+ *   "请求过于频繁，每小时限制 120 次，请在 287 秒后重试"
+ * Extracts the retry-in-seconds value and the hourly quota. Returns null when
+ * the message doesn't match the expected shape.
+ */
+function parseRateLimitMessage(
+  detail: string,
+): { retryAfterSeconds: number; quota: number | null } | null {
+  // Try the Retry-After style "请在 N 秒后重试" / "请在 N 分钟后重试".
+  const secMatch = detail.match(/(\d+)\s*秒后/);
+  const minMatch = detail.match(/(\d+)\s*分钟后/);
+  let retryAfterSeconds = 0;
+  if (secMatch) {
+    retryAfterSeconds = parseInt(secMatch[1]!, 10);
+  } else if (minMatch) {
+    retryAfterSeconds = parseInt(minMatch[1]!, 10) * 60;
+  }
+  // Try the quota "每小时限制 N 次".
+  const quotaMatch = detail.match(/每小时限制\s*(\d+)\s*次/);
+  const quota = quotaMatch ? parseInt(quotaMatch[1]!, 10) : null;
+  if (retryAfterSeconds > 0 || quota !== null) {
+    return { retryAfterSeconds, quota };
+  }
+  return null;
+}
+
 /** Input parameters for a music generation request. */
 export interface AceGenerationParams {
   /** Musical caption / style description (genre + mood + vibe). */
@@ -282,8 +328,31 @@ export async function generateMusic(
           }
         }
         const status = res.status;
-        // Retry on 429 (rate limit) and 5xx (server); do NOT retry 4xx.
-        if ((status === 429 || status >= 500) && attempt < maxAttempts) {
+
+        // 429 = rate limit exceeded. Do NOT retry — retrying would just burn
+        // more of the quota. Parse the server's retry hint and throw a typed
+        // RateLimitError so the UI can show a friendly countdown.
+        if (status === 429) {
+          const parsed = parseRateLimitMessage(detail);
+          // Also honour the standard Retry-After header if present.
+          const retryAfterHeader = Number(res.headers.get("retry-after"));
+          const retryAfter =
+            parsed?.retryAfterSeconds ||
+            (Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+              ? retryAfterHeader
+              : 0);
+          throw new RateLimitError(
+            `Rate limit exceeded${parsed?.quota ? ` (${parsed.quota}/hour)` : ""}` +
+              (retryAfter > 0
+                ? ` — retry in ${Math.ceil(retryAfter / 60)} min`
+                : ""),
+            retryAfter,
+            parsed?.quota ?? null,
+          );
+        }
+
+        // Retry on 5xx (server) only; 4xx (other than 429) is not retried.
+        if (status >= 500 && attempt < maxAttempts) {
           lastError = new Error(`HTTP ${status}: ${detail.slice(0, 200)}`);
           await delay(1500 * attempt);
           continue;
@@ -330,6 +399,10 @@ export async function generateMusic(
       };
     } catch (err) {
       lastError = err;
+      // Preserve RateLimitError as-is so callers can read retryAfterSeconds.
+      if (err instanceof RateLimitError) {
+        throw err;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       // Retry on network/abort errors only.
       const transient =

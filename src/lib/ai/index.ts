@@ -29,6 +29,7 @@ export {
   generateMusic,
   checkAceHealth,
   ACE_CONFIG,
+  RateLimitError,
 } from "./ace-client";
 export type { AceGenerationParams, AceGenerationResult } from "./ace-client";
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages, FileText, Type, ChevronDown, Music, KeyRound, Hash } from "lucide-react";
+import { Loader2, Shuffle, Sparkles, Wand2, Clock, Gauge, Languages, FileText, Type, ChevronDown, Music, KeyRound, Hash, Timer, AlertCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
@@ -46,6 +46,8 @@ export interface PromptComposerProps {
    * state mutation, and error handling.
    */
   onGenerate: (req: GenerateRequest) => Promise<Song>;
+  /** Seconds remaining on the Ace Music rate-limit cooldown (0 = no limit). */
+  rateLimitSecondsLeft?: number;
 }
 
 /**
@@ -54,7 +56,7 @@ export interface PromptComposerProps {
  * generate button. Form state is internal; only loading + onGenerate are
  * controlled by the parent for clean data flow.
  */
-export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
+export function PromptComposer({ loading, onGenerate, rateLimitSecondsLeft = 0 }: PromptComposerProps) {
   const [mode, setMode] = useState<"simple" | "custom">("simple");
   const [prompt, setPrompt] = useState("");
   const [customLyrics, setCustomLyrics] = useState("");
@@ -77,10 +79,18 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
 
   const remaining = MAX_PROMPT - prompt.length;
   const lyricsRemaining = MAX_LYRICS - customLyrics.length;
+  const isRateLimited = rateLimitSecondsLeft > 0;
   const canSubmit =
     !loading &&
+    !isRateLimited &&
     prompt.trim().length > 0 &&
     (mode === "simple" || customLyrics.trim().length >= 20);
+  /** Format seconds as "Mm Ss" or "Ss". */
+  const fmtCountdown = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  };
   // Rough wall-clock estimate for the UI. Ace Music takes ~0.8x duration
   // (standard) or ~1.8x (high-quality LM planning), plus fixed overhead.
   const estimatedSeconds = highQuality
@@ -501,6 +511,36 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
         )}
       </div>
 
+      {/* Rate-limit banner (shown when the Ace Music 429 cooldown is active) */}
+      {isRateLimited && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: "auto" }}
+          exit={{ opacity: 0, height: 0 }}
+          className="mt-4 flex items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3"
+          role="alert"
+        >
+          <AlertCircle className="size-5 shrink-0 text-amber-300" aria-hidden />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-amber-100">
+              Ace Music rate limit reached
+            </p>
+            <p className="text-xs text-amber-200/70">
+              The free API allows 120 generations/hour. Generation will be
+              available again in{" "}
+              <span className="font-semibold tabular-nums">
+                {fmtCountdown(rateLimitSecondsLeft)}
+              </span>
+              .
+            </p>
+          </div>
+          <span className="flex items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 py-1 text-xs font-semibold tabular-nums text-amber-200">
+            <Timer className="size-3" aria-hidden />
+            {fmtCountdown(rateLimitSecondsLeft)}
+          </span>
+        </motion.div>
+      )}
+
       {/* Action row */}
       <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
         <button
@@ -527,7 +567,7 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
           )}
         >
           {/* Sheen sweep on hover (idle only) */}
-          {!loading && (
+          {!loading && !isRateLimited && (
             <span
               aria-hidden
               className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 group-hover:translate-x-full"
@@ -537,6 +577,11 @@ export function PromptComposer({ loading, onGenerate }: PromptComposerProps) {
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden />
               Generating…
+            </>
+          ) : isRateLimited ? (
+            <>
+              <Timer className="size-4" aria-hidden />
+              Available in {fmtCountdown(rateLimitSecondsLeft)}
             </>
           ) : (
             <>
