@@ -41,6 +41,7 @@ import {
 } from "@/lib/types";
 import { generateLyrics, synthesizeAudio, generateCover, RateLimitError } from "@/lib/ai";
 import { toPublicSong } from "@/lib/song-mapper";
+import { getCurrentUserId } from "@/lib/session";
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter (per-IP, sliding window).
@@ -161,6 +162,12 @@ function buildCaption(params: {
 }
 
 export async function POST(req: NextRequest) {
+  // 0. Auth: every generated song must be scoped to the signed-in user.
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   // 1. Rate limit (cheapest gate, do it before any expensive work).
   const ip = getClientIp(req);
   if (rateLimitExceeded(ip)) {
@@ -250,6 +257,8 @@ export async function POST(req: NextRequest) {
     const durationMs = Math.round(duration * 1000);
 
     // 6. Persist the song (audio + cover bytes stored inline in SQLite).
+    //    ownerId ties the song to the authenticated user so subsequent reads
+    //    and mutations can be scoped by ownership.
     const row = await db.song.create({
       data: {
         title,
@@ -268,6 +277,7 @@ export async function POST(req: NextRequest) {
         keyScale: keyScale || null,
         timeSig: timeSignature || null,
         seed: audioResult.seedUsed != null ? BigInt(audioResult.seedUsed) : null,
+        ownerId: userId,
       },
     });
 

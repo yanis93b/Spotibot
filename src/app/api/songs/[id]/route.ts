@@ -19,6 +19,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { toPublicSong } from "@/lib/song-mapper";
+import { getCurrentUserId } from "@/lib/session";
 
 /** Body schema for PATCH. Only `liked` is mutable for now. */
 const patchSchema = z.object({
@@ -29,9 +30,13 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await params;
   try {
-    await db.song.delete({ where: { id } });
+    await db.song.delete({ where: { id, ownerId: userId } });
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {
     if (
@@ -55,6 +60,10 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await params;
 
   let body: unknown;
@@ -86,7 +95,7 @@ export async function PATCH(
   }
 
   try {
-    const row = await db.song.update({ where: { id }, data });
+    const row = await db.song.update({ where: { id, ownerId: userId }, data });
     return NextResponse.json({ success: true, song: toPublicSong(row) }, { status: 200 });
   } catch (err) {
     if (

@@ -47,11 +47,17 @@ bun install
 ```
 
 ### 2. Configure environment
-Copy the example and add your Ace Music API key (get one at https://acemusic.ai/api-key):
+Copy the example and fill in your keys:
 ```bash
 cp .env.example .env
-# Edit .env and set ACE_API_KEY
 ```
+Required:
+- `ACE_API_KEY` — get one at https://acemusic.ai/api-key
+- `NEXTAUTH_SECRET` — generate with `openssl rand -base64 32`
+
+Optional:
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — for GitHub OAuth (create at https://github.com/settings/developers, callback URL: `http://localhost:3000/api/auth/callback/github`)
+- `NEXT_PUBLIC_GITHUB_ENABLED=true` — to show the GitHub button on the sign-in page
 
 ### 3. Set up the database
 ```bash
@@ -62,7 +68,48 @@ bun run db:push
 ```bash
 bun run dev
 ```
-Open http://localhost:3000 in your browser.
+Open http://localhost:3000 — you'll be redirected to `/signin` to create an account.
+
+### Authentication
+SpotiBot uses NextAuth.js with two providers:
+- **Email + password** (works out of the box — sign up on the `/signin` page)
+- **GitHub OAuth** (optional — enable by setting `GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`)
+
+Every user has their own library, playlists, and liked tracks. Data is scoped by `ownerId` — no user can see another's data.
+
+## Production deployment
+
+### Database (PostgreSQL)
+For production, switch from SQLite to PostgreSQL:
+1. Create a Postgres DB (Neon: https://neon.tech, Supabase: https://supabase.com — both free)
+2. Edit `prisma/schema.prisma`:
+   ```prisma
+   datasource db {
+     provider = "postgresql"
+     url      = env("DATABASE_URL")
+   }
+   ```
+3. Set `DATABASE_URL` to your Postgres connection string
+4. Run `bun run db:push`
+
+### Storage (S3/R2)
+Audio + cover bytes are stored inline in SQLite for demo-scale. For production, move them to object storage:
+1. Create a Cloudflare R2 bucket (https://r2.dev — 10GB free) or AWS S3
+2. Upload audio/cover bytes on generation instead of storing in DB
+3. Serve via presigned URLs or a CDN
+
+### Deploy to Vercel
+1. Push your repo to GitHub
+2. Import at https://vercel.com/new
+3. Set all env vars in the Vercel dashboard
+4. Set `NEXTAUTH_URL` to your production URL (e.g. `https://spotibot.vercel.app`)
+5. Deploy
+
+### GitHub OAuth for production
+1. Go to https://github.com/settings/developers → "New OAuth App"
+2. Homepage URL: your production URL
+3. Authorization callback URL: `https://your-domain/api/auth/callback/github`
+4. Copy Client ID + Client Secret to your env vars
 
 ## Project structure
 ```

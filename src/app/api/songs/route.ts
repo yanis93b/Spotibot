@@ -15,10 +15,16 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toPublicSong } from "@/lib/song-mapper";
+import { getCurrentUserId } from "@/lib/session";
 
 export async function GET() {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const rows = await db.song.findMany({
+      where: { ownerId: userId },
       orderBy: { createdAt: "desc" },
       take: 100,
     });

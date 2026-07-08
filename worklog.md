@@ -345,3 +345,28 @@ Stage Summary:
 - Keyboard shortcuts (Space, arrows, M, L, N, P) — verified Space toggles play/pause.
 - Home page polish: time-based greeting + quick-access tiles + carousel.
 - Lint clean, all features verified end-to-end in the browser.
+
+---
+Task ID: auth-api-scoping
+Agent: api-scoping
+Task: Scope all API routes by authenticated user (ownerId)
+
+Work Log:
+- src/app/api/generate/route.ts — POST: added getCurrentUserId() auth gate (401) at the top; set ownerId: userId on db.song.create.
+- src/app/api/songs/route.ts — GET: added auth gate; filtered findMany with where: { ownerId: userId }.
+- src/app/api/songs/[id]/route.ts — DELETE + PATCH: added auth gate; scoped delete/update where: { id, ownerId: userId } (404 on P2025, no existence leak).
+- src/app/api/playlists/route.ts — GET + POST: added auth gate; GET filtered by ownerId, POST sets ownerId on create.
+- src/app/api/playlists/[id]/route.ts — GET/PATCH/DELETE: added auth gate; getPlaylistWithSongs() now takes ownerId; update/delete scoped where: { id, ownerId: userId }.
+- src/app/api/playlists/[id]/tracks/route.ts — POST + DELETE: added auth gate; POST verifies both playlist + song belong to caller (scoped by ownerId); DELETE verifies playlist ownership before mutating (404 if not owned).
+- src/app/api/audio/[id]/route.ts — GET: added auth gate; findUnique scoped where: { id, ownerId: userId } (404 if not owned).
+- src/app/api/cover/[id]/route.ts — GET: added auth gate; findUnique scoped where: { id, ownerId: userId } (404 if not owned).
+- src/app/api/health/ace/route.ts — left PUBLIC (no auth), per instructions.
+- Verified: bun run lint passes clean (no errors/warnings in touched files).
+
+Stage Summary:
+- All protected API routes now require authentication: unauthenticated requests return 401 { error: "Unauthorized" }.
+- All Song reads/creates/mutations are scoped by ownerId = current user's id; cross-user access returns 404 (no existence leakage).
+- All Playlist reads/creates/mutations are scoped by ownerId; track add/remove verifies playlist ownership (and song ownership on add) before mutating.
+- Audio + cover binary streams are owner-scoped, so a user can only stream their own assets.
+- health/ace remains a public liveness probe.
+- No non-API files were modified; existing logic (validation, rate limiting, position re-packing, error mapping) preserved.

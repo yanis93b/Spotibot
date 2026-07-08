@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { useSession, signOut } from "next-auth/react";
 import {
   Music2,
   Sparkles,
@@ -10,6 +11,8 @@ import {
   Plus,
   Github,
   ListMusic,
+  LogOut,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AceStatusIndicator } from "./ace-status-indicator";
@@ -231,18 +234,21 @@ export function AppSidebar({
         </div>
       </div>
 
-      {/* Footer: status + links */}
-      <div className="flex items-center justify-between rounded-lg bg-[#121214] px-3 py-2">
-        <AceStatusIndicator />
-        <a
-          href="https://github.com/ace-step/ACE-Step-1.5"
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="View ACE-Step source on GitHub"
-          className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
-        >
-          <Github className="size-4" aria-hidden />
-        </a>
+      {/* Footer: status + links + user */}
+      <div className="rounded-lg bg-[#121214] p-2">
+        <div className="mb-2 flex items-center justify-between px-1">
+          <AceStatusIndicator />
+          <a
+            href="https://github.com/ace-step/ACE-Step-1.5"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View ACE-Step source on GitHub"
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/5 hover:text-foreground"
+          >
+            <Github className="size-4" aria-hidden />
+          </a>
+        </div>
+        <UserBar />
       </div>
     </aside>
   );
@@ -340,6 +346,57 @@ function hueFromName(name: string): number {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
   return h;
+}
+
+/**
+ * User bar: shows the signed-in user's avatar + email + a sign-out button.
+ * Renders a skeleton while the session is loading.
+ */
+function UserBar() {
+  const { data: session, status } = useSession();
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center gap-2 px-1 py-1.5">
+        <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
+        <span className="text-xs text-muted-foreground">Loading…</span>
+      </div>
+    );
+  }
+
+  if (!session?.user) {
+    return null;
+  }
+
+  const name = session.user.name ?? session.user.email ?? "User";
+  const email = session.user.email ?? "";
+  const image = session.user.image;
+  const initials = name.charAt(0).toUpperCase();
+
+  return (
+    <div className="flex items-center gap-2 rounded-md px-1 py-1.5 transition-colors hover:bg-white/[0.04]">
+      {image ? (
+        <img src={image} alt="" className="size-7 rounded-full" />
+      ) : (
+        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-fuchsia-500 to-purple-600 text-xs font-bold text-white">
+          {initials}
+        </span>
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium text-foreground">{name}</span>
+        <span className="block truncate text-[10px] text-muted-foreground">{email}</span>
+      </span>
+      <button
+        type="button"
+        onClick={() => signOut({ callbackUrl: "/signin" })}
+        aria-label="Sign out"
+        title="Sign out"
+        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/10 hover:text-rose-300"
+      >
+        <LogOut className="size-4" aria-hidden />
+      </button>
+    </div>
+  );
 }
 
 export default AppSidebar;

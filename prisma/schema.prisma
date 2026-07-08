@@ -6,14 +6,27 @@ generator client {
 }
 
 datasource db {
+  // SQLite for local dev. Switch to postgresql for production (Neon/Supabase):
+  //   provider = "postgresql"
+  //   url      = env("DATABASE_URL")
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
+// A registered user. Created on sign-up (email/password) or on first OAuth
+// sign-in (GitHub). Owns songs and playlists.
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  name      String?
+  password  String? // null for OAuth-only users
+  image     String?
+  createdAt DateTime   @default(now())
+  songs     Song[]
+  playlists Playlist[]
+}
+
 // A generated song / track produced by the AI music pipeline.
-// Audio bytes + AI-generated cover art are stored directly in SQLite
-// (small files, demo-scale) and streamed back to the client via the
-// /api/audio/[id] and /api/cover/[id] routes.
 model Song {
   id          String         @id @default(cuid())
   title       String
@@ -26,39 +39,42 @@ model Song {
   audioData   Bytes
   audioFormat String   @default("mp3")
   durationMs  Int      @default(0)
-  // AI-generated square cover art (PNG bytes). Nullable so cover generation
-  // failures don't lose the song — the UI falls back to a gradient cover.
   coverData   Bytes?
   coverFormat String   @default("png")
-  // Musical attributes surfaced by the Ace Music model.
   bpm         Int?
   keyScale    String?
   timeSig     String?
-  // The seed used for generation (enables reproducibility display in the UI).
   seed        BigInt?
   liked       Boolean  @default(false)
   createdAt   DateTime @default(now())
+
+  // Owner of this song. Required — every song belongs to a user.
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
   playlistItems PlaylistSong[]
 
   @@index([createdAt])
   @@index([liked])
+  @@index([ownerId])
 }
 
-// A user-created playlist (Spotify-style). Playlists group songs in a
-// user-defined order. The cover is a gradient derived from the playlist name
-// (no AI cover for playlists — keeps the feature lightweight).
+// A user-created playlist (Spotify-style).
 model Playlist {
   id        String         @id @default(cuid())
   name      String
   createdAt DateTime       @default(now())
+
+  ownerId String
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
   items     PlaylistSong[]
 
   @@index([createdAt])
+  @@index([ownerId])
 }
 
-// Join table between Playlist and Song with an explicit `position` field so
-// tracks keep their user-defined order inside a playlist.
+// Join table between Playlist and Song with an explicit `position` field.
 model PlaylistSong {
   id         String   @id @default(cuid())
   playlistId String

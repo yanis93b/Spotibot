@@ -14,10 +14,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { toPublicPlaylist } from "@/lib/playlist-mapper";
+import { getCurrentUserId } from "@/lib/session";
 
 export async function GET() {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const rows = await db.playlist.findMany({
+      where: { ownerId: userId },
       include: { items: { include: { song: { select: { durationMs: true } } } } },
       orderBy: { createdAt: "desc" },
     });
@@ -36,6 +42,10 @@ const createSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   let body: unknown;
   try {
     body = await req.json();
@@ -51,7 +61,7 @@ export async function POST(req: NextRequest) {
   }
   try {
     const row = await db.playlist.create({
-      data: { name: parsed.data.name },
+      data: { name: parsed.data.name, ownerId: userId },
       include: { items: { include: { song: { select: { durationMs: true } } } } },
     });
     return NextResponse.json(toPublicPlaylist(row), { status: 200 });

@@ -17,11 +17,12 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { toPublicPlaylist } from "@/lib/playlist-mapper";
 import { toPublicSong } from "@/lib/song-mapper";
+import { getCurrentUserId } from "@/lib/session";
 
-/** Resolve a playlist row with its ordered items + nested songs. */
-async function getPlaylistWithSongs(id: string) {
+/** Resolve a playlist row (scoped to `ownerId`) with its ordered items + nested songs. */
+async function getPlaylistWithSongs(id: string, ownerId: string) {
   return db.playlist.findUnique({
-    where: { id },
+    where: { id, ownerId },
     include: {
       items: {
         orderBy: { position: "asc" },
@@ -35,9 +36,13 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await params;
   try {
-    const row = await getPlaylistWithSongs(id);
+    const row = await getPlaylistWithSongs(id, userId);
     if (!row) {
       return NextResponse.json({ error: "Playlist not found" }, { status: 404 });
     }
@@ -64,6 +69,10 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await params;
   let body: unknown;
   try {
@@ -80,7 +89,7 @@ export async function PATCH(
   }
   try {
     const row = await db.playlist.update({
-      where: { id },
+      where: { id, ownerId: userId },
       data: { name: parsed.data.name },
       include: { items: { include: { song: { select: { durationMs: true } } } } },
     });
@@ -98,9 +107,13 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { id } = await params;
   try {
-    await db.playlist.delete({ where: { id } });
+    await db.playlist.delete({ where: { id, ownerId: userId } });
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
